@@ -1,8 +1,8 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 """
 Author: Zach Jetson
-Date:   April 2017
+Date:   May 2017
 Name:   resolv.py
 
 
@@ -69,14 +69,10 @@ except ImportError as e:
 
 
 class Colors():
-    HEADER = '\033[95m'
     BLUE = '\033[94m'
     GREEN = '\033[92m'
-    YELLOW = '\033[93m'
     RED = '\033[91m'
     ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
 
 
 class DNSRecord():
@@ -107,19 +103,37 @@ class DNSRecord():
 
 def main():
     parser = argparse.ArgumentParser(allow_abbrev=False,
-                                     description=Colors.HEADER + "This script will quickly resolve a list of IP addresses and print to a table." + Colors.ENDC)
-    parser.add_argument('--verbose','-v', action='store_true', help="Outputs verbose record information")
+                                     description="""{}
+           )               (
+        ( /(           )   )\ )           (
+        )\())       ( /(  (()/(  (        )\ )     (  (
+       ((_)\  (  (  )\())  /(_))))\(   ( ((_)((   ))\ )(
+        _((_) )\ )\(_))/  (_)) /((_)\  )\ _(_))\ /((_|())
+       | || |((_|(_) |_   | _ (_))((_)((_) |)((_|_))  ((_)
+       | __ / _ (_-<  _|  |   / -_|_-< _ \ \ V // -_)| '_|
+       |_||_\___/__/\__|  |_|_\___/__|___/_|\_/ \___||_|
+
+{}      This script will quickly resolve a list of hosts to IP
+                addresses using multiple techniques.{}
+
+                          By: Zach Jetson
+               github: https://github.com/subfission
+
+    """.format(Colors.RED, Colors.BLUE, Colors.ENDC), formatter_class=argparse.RawTextHelpFormatter)
+
+
+    parser.add_argument('--verbose', '-v', action='store_true', help="Outputs verbose record information")
     parser.add_argument('filename', metavar='hostnames', help="The file containing the host names for query.")
     args = parser.parse_args()
 
-    table_columns = ['Hostname', 'IP', 'Type']
+    table_columns = ['Hostname', 'IP (cached)', 'RType']
 
     if args.verbose:
-        table_columns.append('Record')
-
+        table_columns.append('Record (non-cached)')
 
     pretty_table = PrettyTable(table_columns)
     pretty_table.align = "l"
+    pretty_table.align['RType'] = 'c'
 
     try:
         with open(args.filename, "r") as hostfile:
