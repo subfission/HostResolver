@@ -1,4 +1,4 @@
-# HostsResolver
+# HostResolver
 Resolve host file list to IP addresses.
 
 Python 3.5 based
