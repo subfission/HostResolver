@@ -55,6 +55,7 @@ LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
 
 import socket, sys
 import argparse
+import os
 
 try:
     from prettytable import PrettyTable
@@ -123,7 +124,7 @@ def main():
 
 
     parser.add_argument('--verbose', '-v', action='store_true', help="Outputs verbose record information")
-    parser.add_argument('filename', metavar='hostnames', help="The file containing the host names for query.")
+    parser.add_argument('filename', metavar='hostnames', help="A hostname or file containing the host names for query.")
     args = parser.parse_args()
 
     table_columns = ['Hostname', 'IP (cached)', 'RType']
@@ -136,18 +137,21 @@ def main():
     pretty_table.align['RType'] = 'c'
 
     try:
-        with open(args.filename, "r") as hostfile:
-            print(Colors.BLUE + "\n" + "Resolving hosts from file [" + args.filename + "]" + Colors.ENDC)
-            for line in hostfile:
+        if os.path.isfile(args.filename):
 
-                hostname = line.strip()
-                if not hostname:
-                    continue
+            with open(args.filename, "r") as hostfile:
+                print(Colors.BLUE + "\n" + "Resolving hosts from file [" + args.filename + "]" + Colors.ENDC)
+                for line in hostfile:
 
-                dns_record = DNSRecord(hostname)
-                dns_record.fetch_ip()
-                dns_record.dns_query(args.verbose)
-                pretty_table.add_row(dns_record.result)
+                    hostname = line.strip()
+                    if not hostname:
+                        continue
+
+                    resolve(hostname, pretty_table, args.verbose)
+        else:
+            print(Colors.BLUE + "\n" + "Resolving host from [" + args.filename + "]" + Colors.ENDC)
+            hostname = args.filename.strip()
+            resolve(hostname, pretty_table, args.verbose)
 
     except FileNotFoundError:
         sys.exit("[!] File not found or readable.")
@@ -155,6 +159,13 @@ def main():
     print(pretty_table)
 
     print("\n")
+
+
+def resolve(hostname, table, verbose):
+    dns_record = DNSRecord(hostname)
+    dns_record.fetch_ip()
+    dns_record.dns_query(verbose)
+    table.add_row(dns_record.result)
 
 
 if __name__ == '__main__':
