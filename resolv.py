@@ -56,6 +56,7 @@ LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
 import socket, sys
 import argparse
 import os
+import ipaddress
 
 try:
     from prettytable import PrettyTable
@@ -89,8 +90,14 @@ class DNSRecord():
         self.dns_interrogate(verbose)
 
     def fetch_ip(self):
+
         try:
-            if self.result[0]:
+            host_ip = ipaddress.ip_address(self.result[0])
+        except ValueError:
+            pass
+
+        try:
+            if host_ip:
                 query = self.result[0]
                 name, alias, addresslist = socket.gethostbyaddr(query)
                 self.result[0] = name
@@ -140,9 +147,9 @@ def main():
 
     """.format(Colors.RED, Colors.BLUE, Colors.ENDC), formatter_class=argparse.RawTextHelpFormatter)
 
-
     parser.add_argument('--verbose', '-v', action='store_true', help="Outputs verbose record information")
-    parser.add_argument('filename', metavar='hostnames', help="A hostname, IP, or file containing the host names for query.")
+    parser.add_argument('filename', metavar='hostnames',
+                        help="A hostname, IP, or file containing the host names for query.")
     args = parser.parse_args()
 
     table_columns = ['Hostname', 'IP (cached)', 'RType']
