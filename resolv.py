@@ -63,7 +63,7 @@ except ImportError as e:
     print(e)
     sys.exit("[!] Please run: pip install prettytable")
 try:
-    import dns.resolver
+    from dns import resolver, reversename, rdatatype
 except ImportError as e:
     print(e)
     sys.exit("[!] Please run: pip install dnspython")
@@ -79,20 +79,38 @@ class Colors():
 class DNSRecord():
     def __init__(self, hostname):
         self.result = [hostname]
+        self.ip = None
+        self.rtype = None
+        self.hostname = hostname
+        self.record = None
+
+    def query(self, verbose=False):
+        self.fetch_ip()
+        self.dns_interrogate(verbose)
 
     def fetch_ip(self):
         try:
-            ip = Colors.GREEN + socket.gethostbyname(self.result[0]) + Colors.ENDC
-        except socket.gaierror:
+            if self.result[0]:
+                query = self.result[0]
+                name, alias, addresslist = socket.gethostbyaddr(query)
+                self.result[0] = name
+            else:
+                query = socket.gethostbyname(self.result[0])
+
+            ip = Colors.GREEN + query + Colors.ENDC
+            self.ip = ip
+        except (socket.gaierror, socket.herror):
             ip = Colors.RED + "unresolvable" + Colors.ENDC
         self.result.append(ip)
 
-    def dns_query(self, verbose=False):
+    def dns_interrogate(self, verbose=False):
         try:
-            query = dns.resolver.query(self.result[0])
-            type = dns.rdatatype.to_text(query.response.answer[0].rdtype)
+            query = resolver.query(self.result[0])
+            type = rdatatype.to_text(query.response.answer[0].rdtype)
+            self.rtype = type
             record = '\n'.join(str(i) for i in query.response.answer)
-        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+            self.record = record
+        except (resolver.NoAnswer, resolver.NXDOMAIN):
             record = Colors.RED + "error" + Colors.ENDC
             type = Colors.RED + "error" + Colors.ENDC
 
@@ -147,11 +165,11 @@ def main():
                     if not hostname:
                         continue
 
-                    resolve(hostname, pretty_table, args.verbose)
+                    pretty_table.add_row(resolve(hostname, args.verbose))
         else:
             print(Colors.BLUE + "\n" + "Resolving host from [" + args.filename + "]" + Colors.ENDC)
             hostname = args.filename.strip()
-            resolve(hostname, pretty_table, args.verbose)
+            pretty_table.add_row(resolve(hostname, args.verbose))
 
     except FileNotFoundError:
         sys.exit("[!] File not found or readable.")
@@ -161,11 +179,10 @@ def main():
     print("\n")
 
 
-def resolve(hostname, table, verbose):
+def resolve(hostname, verbose):
     dns_record = DNSRecord(hostname)
-    dns_record.fetch_ip()
-    dns_record.dns_query(verbose)
-    table.add_row(dns_record.result)
+    dns_record.query(verbose)
+    return dns_record.result
 
 
 if __name__ == '__main__':
