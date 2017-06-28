@@ -142,7 +142,7 @@ def main():
 
 
     parser.add_argument('--verbose', '-v', action='store_true', help="Outputs verbose record information")
-    parser.add_argument('filename', metavar='hostnames', help="A hostname or file containing the host names for query.")
+    parser.add_argument('filename', metavar='hostnames', help="A hostname, IP, or file containing the host names for query.")
     args = parser.parse_args()
 
     table_columns = ['Hostname', 'IP (cached)', 'RType']
