@@ -94,7 +94,7 @@ class DNSRecord():
         try:
             host_ip = ipaddress.ip_address(self.result[0])
         except ValueError:
-            pass
+            host_ip = False
 
         try:
             if host_ip:
