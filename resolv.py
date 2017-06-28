@@ -104,11 +104,10 @@ class DNSRecord():
             else:
                 query = socket.gethostbyname(self.result[0])
 
-            ip = Colors.GREEN + query + Colors.ENDC
-            self.ip = ip
+            self.ip = Colors.GREEN + query + Colors.ENDC
         except (socket.gaierror, socket.herror):
-            ip = Colors.RED + "unresolvable" + Colors.ENDC
-        self.result.append(ip)
+            self.ip = Colors.RED + "unresolvable" + Colors.ENDC
+        self.result.append(self.ip)
 
     def dns_interrogate(self, verbose=False):
         try:
