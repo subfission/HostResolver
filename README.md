@@ -1,5 +1,5 @@
 # HostResolver
-Resolve host file list to IP addresses.
+Resolve host file list to cached and uncached IP addresses and scan for SPF records.
 
 Python 3.5 based
 

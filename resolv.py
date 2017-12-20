@@ -57,17 +57,21 @@ import socket, sys
 import argparse
 import os
 import ipaddress
+import re
 
 try:
     from prettytable import PrettyTable
 except ImportError as e:
     print(e)
-    sys.exit("[!] Please run: pip install prettytable")
+    sys.exit("[!] Please run: pip3 install prettytable")
 try:
     from dns import resolver, reversename, rdatatype
 except ImportError as e:
     print(e)
-    sys.exit("[!] Please run: pip install dnspython")
+    sys.exit("[!] Please run: pip3 install dnspython")
+
+
+RE_SPF = re.compile(r'v=spf1',re.IGNORECASE)
 
 
 class Colors():
@@ -84,10 +88,11 @@ class DNSRecord():
         self.rtype = None
         self.hostname = hostname
         self.record = None
+        self.spf = None
 
-    def query(self, verbose=False):
+    def query(self, verbose=False, spf=False):
         self.fetch_ip()
-        self.dns_interrogate(verbose)
+        self.dns_interrogate(verbose, spf)
 
     def fetch_ip(self):
 
@@ -109,7 +114,7 @@ class DNSRecord():
             self.ip = Colors.RED + "unresolvable" + Colors.ENDC
         self.result.append(self.ip)
 
-    def dns_interrogate(self, verbose=False):
+    def dns_interrogate(self, verbose=False, spf=False):
         try:
             query = resolver.query(self.result[0])
             type = rdatatype.to_text(query.response.answer[0].rdtype)
@@ -124,6 +129,24 @@ class DNSRecord():
 
         if verbose:
             self.result.append(record)
+
+        if spf:
+            self.result.append(self.get_spf())
+
+    def get_spf(self):
+        try:
+            query = resolver.query(self.result[0], "SPF")
+        except resolver.NoAnswer:
+            try:
+                query = resolver.query(self.result[0], "TXT")
+            except resolver.NoAnswer:
+                return "DNS record not found"
+
+        matches = [spf.to_text() for spf in query if RE_SPF.search(spf.to_text())]
+        if matches:
+            return "\n".join(matches)
+        
+        return "DNS record not found"
 
 
 def main():
@@ -147,47 +170,52 @@ def main():
     """.format(Colors.RED, Colors.BLUE, Colors.ENDC), formatter_class=argparse.RawTextHelpFormatter)
 
     parser.add_argument('--verbose', '-v', action='store_true', help="Outputs verbose record information")
-    parser.add_argument('filename', metavar='hostnames',
+    parser.add_argument('resource', metavar='hostnames',
                         help="A hostname, IP, or file containing the host names for query.")
+    parser.add_argument('--spf', action='store_true', help="Query for SPF records")
     args = parser.parse_args()
 
     table_columns = ['Hostname', 'IP (cached)', 'RType']
 
     if args.verbose:
         table_columns.append('Record (non-cached)')
+    if args.spf:
+        table_columns.append('SPF Record')
+        print(Colors.BLUE + "SPF record search included..." + Colors.ENDC)
 
     pretty_table = PrettyTable(table_columns)
     pretty_table.align = "l"
     pretty_table.align['RType'] = 'c'
 
+    hostnames = []
     try:
-        if os.path.isfile(args.filename):
-
-            with open(args.filename, "r") as hostfile:
-                print(Colors.BLUE + "\n" + "Resolving hosts from file [" + args.filename + "]" + Colors.ENDC)
+        if os.path.isfile(args.resource):
+            with open(args.resource, "r") as hostfile:
+                print(Colors.BLUE + "\n" + "Resolving hosts from file [" + args.resource + "]" + Colors.ENDC)
                 for line in hostfile:
 
-                    hostname = line.strip()
-                    if not hostname:
+                    record = line.strip()
+                    if not record:
                         continue
-
-                    pretty_table.add_row(resolve(hostname, args.verbose))
+                    hostnames.append(record)
         else:
-            print(Colors.BLUE + "\n" + "Resolving host from [" + args.filename + "]" + Colors.ENDC)
-            hostname = args.filename.strip()
-            pretty_table.add_row(resolve(hostname, args.verbose))
-
+            print(Colors.BLUE + "\n" + "Resolving host from [" + args.resource + "]" + Colors.ENDC)
+            hostname.append(args.resource.strip())
     except FileNotFoundError:
         sys.exit("[!] File not found or readable.")
+
+    for hostname in hostnames:
+        pretty_table.add_row(resolve(hostname, verbose=args.verbose, spf=args.spf))
+
 
     print(pretty_table)
 
     print("\n")
 
 
-def resolve(hostname, verbose):
+def resolve(hostname, verbose=False, spf=False):
     dns_record = DNSRecord(hostname)
-    dns_record.query(verbose)
+    dns_record.query(verbose, spf)
     return dns_record.result
 
 
