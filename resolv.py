@@ -140,13 +140,13 @@ class DNSRecord():
             try:
                 query = resolver.query(self.result[0], "TXT")
             except resolver.NoAnswer:
-                return "DNS record not found"
+                return "TXT record not found"
 
         matches = [spf.to_text() for spf in query if RE_SPF.search(spf.to_text())]
         if matches:
             return "\n".join(matches)
         
-        return "DNS record not found"
+        return "SPF data not found"
 
 
 def main():
@@ -200,7 +200,7 @@ def main():
                     hostnames.append(record)
         else:
             print(Colors.BLUE + "\n" + "Resolving host from [" + args.resource + "]" + Colors.ENDC)
-            hostname.append(args.resource.strip())
+            hostnames.append(args.resource.strip())
     except FileNotFoundError:
         sys.exit("[!] File not found or readable.")
 
