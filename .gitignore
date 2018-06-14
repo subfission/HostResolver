@@ -1,1 +1,8 @@
 resolve.env/
+.Python
+.idea/
+bin/
+include/
+lib/
+pip-selfcheck.json
+resolv.env/
