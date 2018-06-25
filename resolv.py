@@ -100,6 +100,9 @@ Colors = Colorize()
 
 
 class DNSRecord():
+    """
+    DNSRecord manages DNS record actions and results
+    """
     def __init__(self, hostname, args):
         self.result = [hostname]
         self.ip = None
