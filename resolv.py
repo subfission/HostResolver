@@ -57,10 +57,12 @@ import re
 import socket
 import sys
 import threading
+
 try:
     from cymruwhois import Client
     from prettytable import PrettyTable
     import dns.resolver, dns.rdatatype, dns.exception
+
     resolver = dns.resolver.Resolver()
     resolver.timeout = 1.0
     resolver.lifetime = 1.0
@@ -70,6 +72,7 @@ except ImportError as e:
 
 RE_SPF = re.compile(r'v=spf1', re.IGNORECASE)
 MAX_THREADS = 100
+DEBUG = False
 
 
 class Colorize():
@@ -92,6 +95,7 @@ class DNSRecord():
     """
     DNSRecord manages DNS record actions and results
     """
+
     def __init__(self, hostname, args):
         self.result = [hostname]
         self.ip = None
@@ -119,11 +123,12 @@ class DNSRecord():
             host_ip = False
 
         try:
+            query_address = self.result[0]
             if host_ip:
-                query = self.result[0]
-                self.result[0] = socket.gethostbyaddr(query)[0]
+                self.result[0] = socket.gethostbyaddr(query_address)[0]
             else:
-                query = socket.gethostbyname(self.result[0])
+                dprint("Resolving IP from system socket: %s" % query_address)
+                query = socket.gethostbyname(query_address)
 
             self.ip = query
             self.result.append(Colors.GREEN + self.ip + Colors.ENDC)
@@ -169,6 +174,7 @@ class DNSRecord():
 
 
 def get_asn(ips):
+    dprint("Requesting ASNs for %d IPs" % len(ips))
     c = Client()
     return [x for x in c.lookupmany(ips)]
 
@@ -223,11 +229,16 @@ def main():
                         dest='max_threads',
                         type=int,
                         default=50)
+    parser.add_argument('--debug', '-d', action='store_true', help="Enable debug mode")
 
     args = parser.parse_args()
 
     if args.no_color:
         Colors.disable()
+
+    if args.debug:
+        global DEBUG
+        DEBUG = True
 
     parser = Parser(args.resource)
     records = parser.parse()
@@ -246,13 +257,13 @@ class Resolver:
         table_columns = ['Hostname', 'IP (cached)', 'RType']
 
         if self.args.non_cached:
-            pprint(Colors.BLUE + "Non-cached record search included..." + Colors.ENDC)
+            dprint("Non-cached record search included...")
             table_columns.append('Record (non-cached)')
         if self.args.spf:
             table_columns.append('SPF Record')
-            pprint(Colors.BLUE + "SPF record search included..." + Colors.ENDC)
+            dprint("SPF record search included...")
         if self.args.asn:
-            pprint(Colors.BLUE + "ASN record search included..." + Colors.ENDC)
+            dprint("ASN record search included...")
 
         for hostname in records:
             try:
@@ -268,7 +279,7 @@ class Resolver:
         print("")
 
         if self.args.asn:
-            std_print(Colors.BLUE + "Requesting ASNs from resolved host IP addresses" + Colors.ENDC)
+            pprint("Requesting ASNs from resolved host IP addresses")
             asn_list = get_asn([record.ip for record in self.hosts.get_hosts() if not record.dead_host])
             table = build_asn_table(asn_list)
             std_print(table)
@@ -285,7 +296,9 @@ class Resolver:
         while threading.active_count() >= self.max_threads:
             sleep(2)
 
-        threading.Thread(target=self.query, args=(hostname,)).start()
+        pthread = threading.Thread(target=self.query, args=(hostname,))
+        pthread.start()
+        dprint("New thread started: %s" % threading.get_ident() )
 
     @staticmethod
     def end_thread_pool():
@@ -334,7 +347,8 @@ class Parser:
             self.parse_mode = "arg_parser"
 
     def parse(self):
-        std_print(Colors.BLUE + "\n" + "Resolving hosts from [" + self.resource + "]" + Colors.ENDC)
+        print()
+        pprint("Resolving hosts from [ %s ]" % self.resource)
         try:
             parse_method = getattr(self, self.parse_mode)
             return parse_method()
@@ -370,20 +384,25 @@ class Parser:
         return hosts
 
     def arg_parser(self):
-        return self.resource
+        return [self.resource]
 
 
 def error(msg):
-    std_print('[!] Error: %s' % msg)
+    std_print(Colors.RED + '[!] Error: %s' % msg + Colors.ENDC)
 
 
 def critical(msg):
-    std_print('[!] Critical: %s' % msg)
+    std_print(Colors.RED + '[!] Critical: %s' % msg + Colors.ENDC)
     sys.exit(1)
 
 
 def pprint(msg):
-    std_print('[+] %s' % msg)
+    std_print(Colors.GREEN + '[+] %s' % msg + Colors.ENDC)
+
+
+def dprint(msg):
+    if DEBUG:
+        std_print(Colors.BLUE + '[+] %s' % msg + Colors.ENDC)
 
 
 def std_print(msg):
