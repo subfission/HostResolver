@@ -53,13 +53,16 @@ INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT
 LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 """
 
-import socket, sys
-import argparse
-import os
-import ipaddress
-import re
-import threading
 from time import sleep
+import argparse
+import csv
+import ipaddress
+import os
+import re
+import socket
+import sys
+import threading
+from cymruwhois import Client
 
 try:
     from prettytable import PrettyTable
@@ -68,6 +71,7 @@ except ImportError as e:
     sys.exit("[!] Please run: pip3 install prettytable")
 try:
     import dns.resolver, dns.rdatatype, dns.exception
+
     resolver = dns.resolver.Resolver()
     resolver.timeout = 1.0
     resolver.lifetime = 1.0
@@ -75,9 +79,9 @@ except ImportError as e:
     print(e)
     sys.exit("[!] Please run: pip3 install dnspython")
 
-
-RE_SPF = re.compile(r'v=spf1',re.IGNORECASE)
+RE_SPF = re.compile(r'v=spf1', re.IGNORECASE)
 MAX_THREADS = 100
+
 
 class Colorize():
     BLUE = '\033[94m'
@@ -91,7 +95,9 @@ class Colorize():
         self.RED = ''
         self.ENDC = ''
 
+
 Colors = Colorize()
+
 
 class DNSRecord():
     def __init__(self, hostname, args):
@@ -105,8 +111,7 @@ class DNSRecord():
         self.dead_host = False
 
     def __lt__(self, other: object) -> bool:
-        return ((self.hostname.casefold(), self.ip) < (other.hostname.casefold(), other.ip))
-
+        return (self.hostname.casefold(), self.ip) < (other.hostname.casefold(), other.ip)
 
     def query(self):
         self.fetch_ip()
@@ -124,15 +129,16 @@ class DNSRecord():
         try:
             if host_ip:
                 query = self.result[0]
-                name, alias, addresslist = socket.gethostbyaddr(query)
-                self.result[0] = name
+                self.result[0] = socket.gethostbyaddr(query)[0]
             else:
                 query = socket.gethostbyname(self.result[0])
 
-            self.ip = Colors.GREEN + query + Colors.ENDC
+            self.ip = query
+            self.result.append(Colors.GREEN + self.ip + Colors.ENDC)
         except (socket.gaierror, socket.herror):
-            self.ip = Colors.RED + "unresolvable" + Colors.ENDC
-        self.result.append(self.ip)
+            self.ip = "unresolvable"
+            self.dead_host = True
+            self.result.append(Colors.RED + self.ip + Colors.ENDC)
 
     def dns_interrogate(self):
         try:
@@ -145,7 +151,6 @@ class DNSRecord():
         except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
             record = Colors.RED + "error" + Colors.ENDC
             type = Colors.RED + "error" + Colors.ENDC
-
 
         self.result.append(type)
 
@@ -167,11 +172,16 @@ class DNSRecord():
         matches = [spf.to_text() for spf in query if RE_SPF.search(spf.to_text())]
         if matches:
             return "\n".join(matches)
-        
+
         return "SPF data not found"
 
 
-def build_table(table_columns, records):
+def get_asn(ips):
+    c = Client()
+    return [x for x in c.lookupmany(ips)]
+
+
+def build_host_table(table_columns, records):
     pretty_table = PrettyTable(table_columns)
     pretty_table.align = "l"
     pretty_table.align['RType'] = 'c'
@@ -180,6 +190,13 @@ def build_table(table_columns, records):
         pretty_table.add_row(record.result)
     return pretty_table
 
+
+def build_asn_table(records):
+    pretty_table = PrettyTable(['IP', 'ASN', 'Range', 'CO', 'Owner'])
+    pretty_table.align = "l"
+    for asn in records:
+        pretty_table.add_row([Colors.GREEN + asn.ip + Colors.ENDC, asn.asn, asn.prefix, asn.cc, asn.owner])
+    return pretty_table
 
 
 def main():
@@ -206,67 +223,60 @@ def main():
     parser.add_argument('--non-cached', '-n', action='store_true', help="Include queries ignoring cached record data")
     parser.add_argument('--no-color', '-c', action='store_true', help="Disable colored output")
     parser.add_argument('resource', metavar='hostnames',
-                        help="A hostname, IP, or file containing the host names for query.")
+                        help="A hostname, IP, CSV, or return delimited file containing the hostnames for query.")
     parser.add_argument('--spf', action='store_true', help="Query for SPF records")
-    parser.add_argument('--dead', action='store_true', help="Output only hosts without DNS records")
+    parser.add_argument('--asn', action='store_true', help="Output ASN record for host or host list")
     parser.add_argument('--threads', '-t',
-                             help='Set the maximum number of threads. (Recommended default is 50)',
-                             dest='max_threads',
-                             type=int,
-                             default=50)
+                        help='Set the maximum number of threads. (Recommended default is 50)',
+                        dest='max_threads',
+                        type=int,
+                        default=50)
 
     args = parser.parse_args()
 
-    resolver = Resolver(args)
-    resolver.resolve()
+    if args.no_color:
+        Colors.disable()
+
+    parser = Parser(args.resource)
+    records = parser.parse()
+
+    host_resolver = Resolver(args)
+    host_resolver.resolve(records)
 
 
-
-class Resolver():
-    def __init__(self, args, **kwargs):
+class Resolver:
+    def __init__(self, args):
         self.max_threads = args.max_threads
         self.hosts = Hosts()
         self.args = args
 
-        
-
-    def resolve(self):
-        records = []
-
+    def resolve(self, records):
         table_columns = ['Hostname', 'IP (cached)', 'RType']
-        if self.args.no_color:
-            Colors.disable()
+
         if self.args.non_cached:
             table_columns.append('Record (non-cached)')
         if self.args.spf:
             table_columns.append('SPF Record')
-            print(Colors.BLUE + "SPF record search included..." + Colors.ENDC)
-
-        try:
-            if os.path.isfile(self.args.resource):
-                with open(self.args.resource, "r") as hostfile:
-                    print(Colors.BLUE + "\n" + "Resolving hosts from file [" + self.args.resource + "]" + Colors.ENDC)
-                    for line in hostfile:
-                        record = line.strip()
-                        if not record:
-                            continue
-                        records.append(record)
-            else:
-                print(Colors.BLUE + "\n" + "Resolving host from [" + self.args.resource + "]" + Colors.ENDC)
-                record = self.args.resource.strip()
-                records.append(record)
-        except FileNotFoundError:
-            sys.exit("[!] File not found or readable.")
+            pprint(Colors.BLUE + "SPF record search included..." + Colors.ENDC)
 
         for hostname in records:
-            self.build_query_from_record(hostname)
+            try:
+                self.build_query_from_record(hostname)
+            except KeyboardInterrupt:
+                self.max_threads = 0
+                error("shutting down cleanly")
+                self.end_thread_pool()
 
         self.end_thread_pool()
+        table = build_host_table(table_columns, self.hosts.get_hosts())
+        std_print(table)
+        print("")
 
-        table = build_table(table_columns, self.hosts.getHosts())
-        print(table)
-        print("\n")
-
+        if self.args.asn:
+            std_print(Colors.BLUE + "Requesting ASNs from resolved host IP addresses" + Colors.ENDC)
+            asn_list = get_asn([record.ip for record in self.hosts.get_hosts() if not record.dead_host])
+            table = build_asn_table(asn_list)
+            std_print(table)
 
     def query(self, hostname):
         dns_record = DNSRecord(hostname, self.args)
@@ -274,8 +284,7 @@ class Resolver():
         self.hosts.append(dns_record)
 
         if self.args.verbose:
-            print("Acquired: " + ", ".join(dns_record.result))
-
+            pprint(", ".join(dns_record.result))
 
     def build_query_from_record(self, hostname):
         while threading.active_count() >= self.max_threads:
@@ -283,8 +292,8 @@ class Resolver():
 
         threading.Thread(target=self.query, args=(hostname,)).start()
 
-
-    def end_thread_pool(self):
+    @staticmethod
+    def end_thread_pool():
         """
         Let threads finish and have them return their results
 
@@ -295,13 +304,13 @@ class Resolver():
             if aThread is main_thread:
                 continue
             aThread.join()
- 
 
 
-class Hosts():
+class Hosts:
     """
     Storage object for hosts
     """
+
     def __init__(self):
         self._hosts = []
 
@@ -311,9 +320,79 @@ class Hosts():
     def __len__(self):
         return len(self._hosts)
 
-    def getHosts(self):
+    def get_hosts(self):
         return self._hosts
 
+
+class Parser:
+
+    def __init__(self, resource):
+
+        self.resource = resource.strip()
+
+        if os.path.isfile(resource):
+            if resource.endswith('.csv'):
+                self.parse_mode = "csv_parser"
+            else:
+                self.parse_mode = "file_parser"
+        else:
+            self.parse_mode = "arg_parser"
+
+    def parse(self):
+        std_print(Colors.BLUE + "\n" + "Resolving hosts from [" + self.resource + "]" + Colors.ENDC)
+        try:
+            parse_method = getattr(self, self.parse_mode)
+            return parse_method()
+        except FileNotFoundError:
+            critical("File not found or readable.")
+
+    def csv_parser(self):
+        host_position = None
+        with open(self.resource) as csv_file:
+            csv_reader = csv.reader(csv_file, delimiter=',', quotechar='"')
+
+            header = next(csv_reader)
+
+            # Assumed hostname resolution as primary
+            host_position = [i for i, s in enumerate(header) if s.lower() in ['hostname', 'host', 'host name']][0]
+            if not host_position:
+                # Assumed IP resolution
+                host_position = \
+                    [i for i, s in enumerate(header) if s.lower() in ['ip', 'ip_addresses', 'ip addresses']][0]
+
+            hosts = []
+            for row in csv_reader:
+                r_hosts = row[host_position].split(" ")
+                if r_hosts:
+                    hosts = list(set(hosts + r_hosts))
+
+        return filter(None, hosts)
+
+    def file_parser(self):
+        with open(self.resource, "r") as host_file:
+            hosts = [line.strip() for line in host_file]
+
+        return hosts
+
+    def arg_parser(self):
+        return self.resource
+
+
+def error(msg):
+    std_print('[!] Error: %s' % msg)
+
+
+def critical(msg):
+    std_print('[!] Critical: %s' % msg)
+    sys.exit(1)
+
+
+def pprint(msg):
+    std_print('[+] %s' % msg)
+
+
+def std_print(msg):
+    print(msg)
 
 
 if __name__ == '__main__':
