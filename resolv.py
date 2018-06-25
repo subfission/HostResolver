@@ -1,6 +1,21 @@
 #!/usr/bin/env python3
 
 """
+Copyright (c) 2017-2018, Zach Jetson All rights reserved.
+
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
 Author: Zach Jetson
 Date:   May 2017
 Name:   resolv.py
@@ -15,6 +30,7 @@ Requirements
 * Python 3.0-6
 * PrettyTable 0.7.x
 * dnspython 1.15.x
+* cymruwhois 1.6
 
 Sample Output
 
@@ -30,27 +46,6 @@ Resolving hosts from file [hostnames.txt]
 | askjeeves.com | 66.235.121.240 |
 +---------------+----------------+
 
-
-
-Copyright (c) 2017, Zach Jetson All rights reserved.
-
-Redistribution and use in source and binary forms, with or without modification,
-are permitted provided that the following conditions are met: * Redistributions
-of source code must retain the above copyright notice, this list of conditions and
-the following disclaimer. * Redistributions in binary form must reproduce the above
-copyright notice, this list of conditions and the following disclaimer in the
-documentation and/or other materials provided with the distribution. * Neither the
-name of the nor the names of its contributors may be used to endorse or promote
-products derived from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
-THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL CHRISTOPHER DUFFY BE LIABLE FOR ANY DIRECT, INDIRECT,
-INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
-LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 """
 
 from time import sleep
@@ -62,22 +57,16 @@ import re
 import socket
 import sys
 import threading
-from cymruwhois import Client
-
 try:
+    from cymruwhois import Client
     from prettytable import PrettyTable
-except ImportError as e:
-    print(e)
-    sys.exit("[!] Please run: pip3 install prettytable")
-try:
     import dns.resolver, dns.rdatatype, dns.exception
-
     resolver = dns.resolver.Resolver()
     resolver.timeout = 1.0
     resolver.lifetime = 1.0
 except ImportError as e:
     print(e)
-    sys.exit("[!] Please run: pip3 install dnspython")
+    sys.exit("[!] Critical: Please run> pip3 install -r requirements")
 
 RE_SPF = re.compile(r'v=spf1', re.IGNORECASE)
 MAX_THREADS = 100
@@ -226,7 +215,7 @@ def main():
     parser.add_argument('--non-cached', '-n', action='store_true', help="Include queries ignoring cached record data")
     parser.add_argument('--no-color', '-c', action='store_true', help="Disable colored output")
     parser.add_argument('resource', metavar='hostnames',
-                        help="A hostname, IP, CSV, or return delimited file containing the hostnames for query.")
+                        help="A hostname, IP, CSV, or return delimited file containing the host names for query.")
     parser.add_argument('--spf', action='store_true', help="Query for SPF records")
     parser.add_argument('--asn', action='store_true', help="Output ASN record for host or host list")
     parser.add_argument('--threads', '-t',
@@ -257,10 +246,13 @@ class Resolver:
         table_columns = ['Hostname', 'IP (cached)', 'RType']
 
         if self.args.non_cached:
+            pprint(Colors.BLUE + "Non-cached record search included..." + Colors.ENDC)
             table_columns.append('Record (non-cached)')
         if self.args.spf:
             table_columns.append('SPF Record')
             pprint(Colors.BLUE + "SPF record search included..." + Colors.ENDC)
+        if self.args.asn:
+            pprint(Colors.BLUE + "ASN record search included..." + Colors.ENDC)
 
         for hostname in records:
             try:
