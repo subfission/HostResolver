@@ -96,80 +96,105 @@ class DNSRecord():
     DNSRecord manages DNS record actions and results
     """
 
-    def __init__(self, hostname, args):
+    UNRESOLVABLE = 'unresolvable'
+    ERROR = 'error'
+
+    def __init__(self, hostname, **kwargs):
+        # Flags for results and searches
+        self.inc_uncached = kwargs.get("uncached", False)
+        self.inc_spf = kwargs.get("spf", False)
+
+        # Storage variables
         self.result = [hostname]
         self.ip = None
         self.rtype = None
         self.hostname = hostname
         self.record = None
         self.spf = None
-        self.args = args
         self.dead_host = False
 
     def __lt__(self, other: object) -> bool:
         return (self.hostname.casefold(), self.ip) < (other.hostname.casefold(), other.ip)
 
-    def query(self):
-        self.fetch_ip()
-        self.dns_interrogate()
+    def get_results(self):
+        results = []
+        if self.hostname == DNSRecord.UNRESOLVABLE:
+            results.append(Colors.RED + self.hostname + Colors.ENDC)
+        else:
+            results.append(self.hostname)
 
-        return self.result
+        if self.ip == DNSRecord.UNRESOLVABLE or self.ip == DNSRecord.ERROR:
+            results.append(Colors.RED + self.ip + Colors.ENDC)
+        else:
+            results.append(Colors.GREEN + self.ip + Colors.ENDC)
+
+        if self.rtype == DNSRecord.ERROR:
+            results.append(Colors.RED + self.rtype + Colors.ENDC)
+        else:
+            results.append(self.rtype)
+
+        if self.inc_uncached:
+            results.append(self.record)
+
+        if self.inc_spf:
+            results.append(self.spf)
+
+        return results
 
     def fetch_ip(self):
 
         try:
-            self.ip = str(ipaddress.ip_address(self.result[0]))
+            self.ip = str(ipaddress.ip_address(self.hostname))
         except ValueError:
             pass
         try:
-            query_address = self.result[0]
             if self.ip:
-                dprint("Resolving hostname from system: %s" % query_address)
-                self.result[0] = socket.gethostbyaddr(query_address)[0]
+                dprint("Resolving hostname from system: %s" % self.ip)
+                self.hostname = socket.gethostbyaddr(self.ip)[0]
             else:
-                dprint("Resolving IP from system: %s" % query_address)
-                self.ip = str(socket.gethostbyname(query_address))
+                dprint("Resolving IP from system: %s" % self.hostname)
+                self.ip = str(socket.gethostbyname(self.hostname))
 
-            self.result.append(Colors.GREEN + self.ip + Colors.ENDC)
         except (socket.gaierror, socket.herror):
-            self.ip = "unresolvable"
+            if self.ip:
+                self.hostname = DNSRecord.UNRESOLVABLE
+            else:
+                self.ip = DNSRecord.UNRESOLVABLE
             self.dead_host = True
-            self.result.append(Colors.RED + self.ip + Colors.ENDC)
 
     def dns_interrogate(self):
         try:
+            if self.hostname == DNSRecord.UNRESOLVABLE:
+                dns.exception.DNSException("")
             query = resolver.query(self.result[0])
-            type = dns.rdatatype.to_text(query.response.answer[0].rdtype)
-            self.rtype = type
-            record = '\n'.join(str(i) for i in query.response.answer)
-            self.record = record
+            self.rtype = dns.rdatatype.to_text(query.response.answer[0].rdtype)
+            self.record = '\n'.join(str(i) for i in query.response.answer)
 
         except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
-            record = Colors.RED + "error" + Colors.ENDC
-            type = Colors.RED + "error" + Colors.ENDC
-
-        self.result.append(type)
-
-        if self.args.non_cached:
-            self.result.append(record)
-
-        if self.args.spf:
-            self.result.append(self.get_spf())
+            self.record = "error"
+            self.rtype = DNSRecord.ERROR
 
     def get_spf(self):
         try:
-            query = resolver.query(self.result[0], "SPF")
+            if self.hostname == DNSRecord.UNRESOLVABLE:
+                query = resolver.query(self.ip, "SPF")
+            else:
+                query = resolver.query(self.hostname, "SPF")
         except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
             try:
-                query = resolver.query(self.result[0], "TXT")
+                if self.hostname == DNSRecord.UNRESOLVABLE:
+                    query = resolver.query(self.ip, "TXT")
+                else:
+                    query = resolver.query(self.hostname, "SPF")
             except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
-                return "TXT record not found"
+                self.spf = "No TXT records found"
+                return
 
-        matches = [spf.to_text() for spf in query if RE_SPF.search(spf.to_text())]
-        if matches:
-            return "\n".join(matches)
-
-        return "SPF data not found"
+        spf = [spf.to_text() for spf in query if RE_SPF.search(spf.to_text())]
+        if spf:
+            self.spf = " ".join(spf)
+        else:
+            self.spf = "No SPF data found"
 
 
 def get_asn(ips):
@@ -178,22 +203,21 @@ def get_asn(ips):
     return [x for x in c.lookupmany(ips)]
 
 
-def build_host_table(table_columns, records):
-    pretty_table = PrettyTable(table_columns)
-    pretty_table.align = "l"
-    pretty_table.align['RType'] = 'c'
-    records.sort()
-    for record in records:
-        pretty_table.add_row(record.result)
-    return pretty_table
-
-
-def build_asn_table(records):
-    pretty_table = PrettyTable(['IP', 'ASN', 'Range', 'CO', 'Owner'])
-    pretty_table.align = "l"
-    for asn in records:
-        pretty_table.add_row([Colors.GREEN + asn.ip + Colors.ENDC, asn.asn, asn.prefix, asn.cc, asn.owner])
-    return pretty_table
+def build_table(table_columns=[], records=[]):
+    if type(records[0]) is DNSRecord:
+        pretty_table = PrettyTable(table_columns)
+        pretty_table.align = "l"
+        pretty_table.align['RType'] = 'c'
+        records.sort()
+        for record in records:
+            pretty_table.add_row(record.get_results())
+        return pretty_table
+    else:
+        pretty_table = PrettyTable(table_columns)
+        pretty_table.align = "l"
+        for asn in records:
+            pretty_table.add_row([asn.ip, Colors.GREEN + asn.asn + Colors.ENDC, asn.prefix, asn.cc, asn.owner])
+        return pretty_table
 
 
 def main():
@@ -217,7 +241,7 @@ def main():
     """.format(Colors.RED, Colors.BLUE, Colors.ENDC), formatter_class=argparse.RawTextHelpFormatter)
 
     parser.add_argument('--verbose', '-v', action='store_true', help="Outputs verbose record information")
-    parser.add_argument('--non-cached', '-n', action='store_true', help="Include queries ignoring cached record data")
+    parser.add_argument('--uncached', '-u', action='store_true', help="Include queries ignoring cached record data")
     parser.add_argument('--no-color', '-c', action='store_true', help="Disable colored output")
     parser.add_argument('resource', metavar='hostnames',
                         help="A hostname, IP, CSV, or return delimited file containing the host names for query.")
@@ -256,11 +280,11 @@ class Resolver:
         self.args = args
 
     def resolve(self, records):
-        table_columns = ['Hostname', 'IP (cached)', 'RType']
+        table_columns = ['Hostname', 'IP', 'RType']
 
-        if self.args.non_cached:
-            dprint("Non-cached record search included...")
-            table_columns.append('Record (non-cached)')
+        if self.args.uncached:
+            dprint("Uncached record search included...")
+            table_columns.append('DNS Record (uncached)')
         if self.args.spf:
             table_columns.append('SPF Record')
             dprint("SPF record search included...")
@@ -276,21 +300,23 @@ class Resolver:
                 self.end_thread_pool()
 
         self.end_thread_pool()
-        table = build_host_table(table_columns, self.hosts)
+        table = build_table(table_columns=table_columns, records=self.hosts)
         std_print(table)
         print("")
 
         if self.args.asn:
             pprint("Requesting ASNs from resolved host IP addresses")
             asn_list = get_asn([record.ip for record in self.hosts if not record.dead_host])
-            table = build_asn_table(asn_list)
+            table = build_table(table_columns=['IP', 'ASN', 'Range', 'CO', 'Owner'], records=asn_list)
             std_print(table)
 
     def query(self, hostname):
-        dns_record = DNSRecord(hostname, self.args)
-        dns_record.query()
+        dns_record = DNSRecord(hostname, spf=self.args.spf, uncached=self.args.uncached)
+        dns_record.fetch_ip()
+        dns_record.dns_interrogate()
+        if self.args.spf:
+            dns_record.get_spf()
         self.hosts.append(dns_record)
-
         if self.args.verbose:
             pprint(", ".join(dns_record.result))
 
@@ -300,7 +326,6 @@ class Resolver:
 
         pthread = threading.Thread(target=self.query, args=(hostname,))
         pthread.start()
-        dprint("New thread started: %s" % threading.get_ident())
 
     @staticmethod
     def end_thread_pool():
@@ -315,6 +340,7 @@ class Resolver:
                 continue
             aThread.join()
 
+        dprint("Waiting for threads to finish")
 
 class Parser:
 
