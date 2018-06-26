@@ -250,7 +250,10 @@ def main():
 class Resolver:
     def __init__(self, args):
         self.max_threads = args.max_threads
-        self.hosts = Hosts()
+        """
+        Storage object for hosts
+        """
+        self.hosts = []
         self.args = args
 
     def resolve(self, records):
@@ -274,13 +277,13 @@ class Resolver:
                 self.end_thread_pool()
 
         self.end_thread_pool()
-        table = build_host_table(table_columns, self.hosts.get_hosts())
+        table = build_host_table(table_columns, self.hosts)
         std_print(table)
         print("")
 
         if self.args.asn:
             pprint("Requesting ASNs from resolved host IP addresses")
-            asn_list = get_asn([record.ip for record in self.hosts.get_hosts() if not record.dead_host])
+            asn_list = get_asn([record.ip for record in self.hosts if not record.dead_host])
             table = build_asn_table(asn_list)
             std_print(table)
 
@@ -298,7 +301,7 @@ class Resolver:
 
         pthread = threading.Thread(target=self.query, args=(hostname,))
         pthread.start()
-        dprint("New thread started: %s" % threading.get_ident() )
+        dprint("New thread started: %s" % threading.get_ident())
 
     @staticmethod
     def end_thread_pool():
@@ -312,24 +315,6 @@ class Resolver:
             if aThread is main_thread:
                 continue
             aThread.join()
-
-
-class Hosts:
-    """
-    Storage object for hosts
-    """
-
-    def __init__(self):
-        self._hosts = []
-
-    def append(self, host):
-        self._hosts.append(host)
-
-    def __len__(self):
-        return len(self._hosts)
-
-    def get_hosts(self):
-        return self._hosts
 
 
 class Parser:
