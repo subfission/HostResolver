@@ -305,8 +305,9 @@ class Resolver:
         print("")
 
         if self.args.asn:
-            pprint("Requesting ASNs from resolved host IP addresses")
-            asn_list = get_asn([record.ip for record in self.hosts if not record.dead_host])
+            salvageable_host_ips = [record.ip for record in self.hosts if not record.dead_host]
+            pprint("Requesting ASNs from %d resolved host IP addresses" % len(salvageable_host_ips))
+            asn_list = get_asn(salvageable_host_ips)
             table = build_table(table_columns=['IP', 'ASN', 'Range', 'CO', 'Owner'], records=asn_list)
             std_print(table)
 
