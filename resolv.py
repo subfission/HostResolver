@@ -118,19 +118,18 @@ class DNSRecord():
     def fetch_ip(self):
 
         try:
-            host_ip = ipaddress.ip_address(self.result[0])
+            self.ip = str(ipaddress.ip_address(self.result[0]))
         except ValueError:
-            host_ip = False
-
+            pass
         try:
             query_address = self.result[0]
-            if host_ip:
+            if self.ip:
+                dprint("Resolving hostname from system: %s" % query_address)
                 self.result[0] = socket.gethostbyaddr(query_address)[0]
             else:
-                dprint("Resolving IP from system socket: %s" % query_address)
-                query = socket.gethostbyname(query_address)
+                dprint("Resolving IP from system: %s" % query_address)
+                self.ip = str(socket.gethostbyname(query_address))
 
-            self.ip = query
             self.result.append(Colors.GREEN + self.ip + Colors.ENDC)
         except (socket.gaierror, socket.herror):
             self.ip = "unresolvable"
