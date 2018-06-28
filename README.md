@@ -36,3 +36,11 @@ Optionally, you can use virtual_env or other tools to manage your packages.
     python3 resolv.py --threads 200 --asn --spf hostname_list.txt
     
 *More threads will allow a faster execution, with a tradeoff of system resources.*
+
+
+## Future
+
+ - DMARK & DKIM results
+ - Flags indicating DNS config issues
+ - SSL Ciphers per host
+ 
