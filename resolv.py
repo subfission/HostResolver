@@ -206,22 +206,16 @@ class DNSRecord():
     def get_spf(self):
         try:
             if self.hostname == DNSRecord.UNRESOLVABLE:
-                query = resolver.query(self.ip, "SPF")
+                query = dns.resolver.query(self.ip, "TXT")
             else:
-                query = resolver.query(self.hostname, "SPF")
+                query = dns.resolver.query(self.hostname, "TXT")
         except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
-            try:
-                if self.hostname == DNSRecord.UNRESOLVABLE:
-                    query = resolver.query(self.ip, "TXT")
-                else:
-                    query = resolver.query(self.hostname, "SPF")
-            except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
-                self.spf = "No TXT records found"
-                return
+            self.spf = "No TXT records found"
+            return
 
         spf = [spf.to_text() for spf in query if RE_SPF.search(spf.to_text())]
         if spf:
-            self.spf = " ".join(spf)
+            self.spf = "".join(spf).strip('"')
         else:
             self.spf = "No SPF data found"
 
