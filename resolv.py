@@ -71,9 +71,12 @@ try:
     resolver.lifetime = 1.0
 except ImportError as e:
     print(e)
-    sys.exit("[!] Critical: Please run> pip3 install -r requirements")
+    sys.exit("[!] Critical: Please run> pip3 install -r requirements.txt")
 
 RE_SPF = re.compile(r'v=spf1', re.IGNORECASE)
+RE_SPF_MECH = re.compile(r'^(?:include|exists|ptr|a|mx):', re.MULTILINE | re.IGNORECASE)
+RE_DMARC = re.compile(r'v=DMARC1', re.IGNORECASE)
+
 MAX_THREADS = 100
 DEBUG = False
 
@@ -123,11 +126,13 @@ class DNSRecord():
 
     UNRESOLVABLE = 'unresolvable'
     ERROR = 'error'
+    MISSING_TXT = 'txt records not found'
 
     def __init__(self, hostname, **kwargs):
         # Flags for results and searches
         self.inc_uncached = kwargs.get("uncached", False)
         self.inc_spf = kwargs.get("spf", False)
+        self.inc_dmarc = kwargs.get("dmarc", False)
         self.verbose = kwargs.get("verbose", False)
 
         # Storage variables
@@ -141,6 +146,7 @@ class DNSRecord():
         self.as_cidr = None
         self.as_country = None
         self.asn_org = None
+        self.dmarc = None
         self.dead_host = False
 
     def __lt__(self, other: object) -> bool:
@@ -153,7 +159,7 @@ class DNSRecord():
         else:
             results.append(self.hostname)
 
-        if self.ip == DNSRecord.UNRESOLVABLE or self.ip == DNSRecord.ERROR:
+        if self.ip in (DNSRecord.UNRESOLVABLE, DNSRecord.ERROR):
             results.append(Colors.RED + self.ip + Colors.ENDC)
         else:
             results.append(Colors.GREEN + self.ip + Colors.ENDC)
@@ -166,8 +172,17 @@ class DNSRecord():
         if self.inc_uncached:
             results.append(self.record)
 
-        if self.inc_spf:
-            results.append(self.spf)
+        if self.spf:
+            if self.spf in (DNSRecord.ERROR, DNSRecord.UNRESOLVABLE, DNSRecord.MISSING_TXT):
+                results.append(Colors.RED + self.spf + Colors.ENDC)
+            else:
+                results.append(self.spf)
+
+        if self.dmarc:
+            if self.dmarc in (DNSRecord.ERROR, DNSRecord.UNRESOLVABLE, DNSRecord.MISSING_TXT):
+                results.append(Colors.RED + self.dmarc + Colors.ENDC)
+            else:
+                results.append(self.dmarc)
 
         return results
 
@@ -214,14 +229,53 @@ class DNSRecord():
             else:
                 query = dns.resolver.query(self.hostname, "TXT")
         except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
-            self.spf = "No TXT records found"
+            self.spf = DNSRecord.MISSING_TXT
             return
 
-        spf = [spf.to_text() for spf in query if RE_SPF.search(spf.to_text())]
-        if spf:
-            self.spf = "".join(spf).strip('"')
+        spf_results = []
+        perm_err = False
+
+        for q in query:
+            if RE_SPF.search(q.to_text()):
+                debug(q.to_text())
+                spf_results.append("\n".join("".join(q.to_text().split("\" \"")).strip('"').split(" ")[1:]))
+
+        if not spf_results:
+            self.spf = DNSRecord.UNRESOLVABLE
+
+        if len(spf_results) > 1:
+            perm_err = True
+            debug("SPF PermErr: multiple SPF records detected")
+
+        spf_results = "".join(spf_results)
+        if len(RE_SPF_MECH.findall(spf_results)) > 10:
+            debug("SPF PermErr: greater than 10 mechanisms detected")
+            perm_err = True
+
+        if perm_err:
+            self.spf = Colors.RED + "PermErr\n" + Colors.ENDC + "".join(spf_results)
         else:
-            self.spf = "No SPF data found"
+            self.spf = "".join(spf_results)
+
+    def get_dmarc(self):
+        if self.dead_host:
+            self.dmarc = DNSRecord.ERROR
+            return
+        try:
+            qstr = "_dmarc." + self.hostname
+            debug("Checking %s" % qstr)
+            query = dns.resolver.query(qstr, "TXT")
+        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
+            self.dmarc = DNSRecord.MISSING_TXT
+            return
+
+        for q in query:
+            if RE_DMARC.search(q.to_text()):
+                debug(q.to_text())
+                self.dmarc = "\n".join(q.to_text().strip('"').split("; ")[1:])
+                return
+
+        self.dmarc = DNSRecord.ERROR
 
     def get_asn(self):
         if self.ip == DNSRecord.UNRESOLVABLE:
@@ -282,12 +336,18 @@ class HostResolver:
     def resolve(self, records):
         table_columns = ['Hostname', 'IP', 'RType']
 
+        if not records or len(records) < 1:
+            critical("Invalid hosts")
+
         if self.args.uncached:
             debug("Uncached record search included...")
             table_columns.append('DNS Record (uncached)')
         if self.args.spf:
-            table_columns.append('SPF Record')
+            table_columns.append('SPF')
             debug("SPF record search included...")
+        if self.args.dmarc:
+            table_columns.append('DMARC')
+            debug("DMARC record search included...")
         if self.args.asn:
             debug("ASN record search included...")
 
@@ -300,6 +360,7 @@ class HostResolver:
                 self.end_thread_pool()
 
         self.end_thread_pool()
+
         table = build_table(table_columns=table_columns, records=self.hosts)
         stdout(table)
         print("")
@@ -320,6 +381,9 @@ class HostResolver:
         dns_record.dns_interrogate()
         if self.args.spf:
             dns_record.get_spf()
+        if self.args.dmarc:
+            dns_record.get_dmarc()
+
         self.hosts.append(dns_record)
         if self.args.verbose:
             info(", ".join(dns_record.result))
@@ -386,11 +450,18 @@ class Parser:
             header = next(csv_reader)
 
             # Assumed hostname resolution as primary
-            host_position = [i for i, s in enumerate(header) if s.lower() in ['hostname', 'host', 'host name']][0]
+            try:
+                host_position = [i for i, s in enumerate(header) if s.lower() in ['hostname', 'host', 'host name']][0]
+            except IndexError:
+                host_position = False
             if not host_position:
                 # Assumed IP resolution
-                host_position = \
-                    [i for i, s in enumerate(header) if s.lower() in ['ip', 'ip_addresses', 'ip addresses']][0]
+                try:
+                    host_position = \
+                        [i for i, s in enumerate(header) if s.lower() in ['ip', 'ip_addresses', 'ip addresses']][0]
+                except IndexError:
+                    debug("No hosts found or missing headers in file")
+                    return None
 
             hosts = []
             for row in csv_reader:
@@ -437,6 +508,7 @@ def main():
                         help="A hostname, IP, CSV, or return delimited file containing the host names for query.")
     parser.add_argument('--spf', action='store_true', help="Query for SPF records")
     parser.add_argument('--asn', action='store_true', help="Output ASN record for host or host list")
+    parser.add_argument('--dmarc', action='store_true', help="Output DMARC record for host or host list")
     parser.add_argument('--threads', '-t',
                         help='Set the maximum number of threads. (Recommended default is 50)',
                         dest='max_threads',
