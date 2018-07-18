@@ -137,6 +137,10 @@ class DNSRecord():
         self.hostname = hostname
         self.record = None
         self.spf = None
+        self.as_number = None
+        self.as_cidr = None
+        self.as_country = None
+        self.asn_org = None
         self.dead_host = False
 
     def __lt__(self, other: object) -> bool:
@@ -218,6 +222,27 @@ class DNSRecord():
             self.spf = "".join(spf).strip('"')
         else:
             self.spf = "No SPF data found"
+
+    def get_asn(self):
+        if self.ip == DNSRecord.UNRESOLVABLE:
+            self.as_number = DNSRecord.UNRESOLVABLE
+            return
+
+        try:
+            cymru_host_query = ".".join(list(reversed(self.ip.split(".")))) + ".origin.asn.cymru.com"
+            asn_resolver = dns.resolver.query(cymru_host_query, "TXT")
+            self.as_number, self.as_cidr, self.as_country, _, _ = asn_resolver[0].to_text().strip("\"").split(" | ")
+        except dns.resolver.NXDOMAIN:
+            self.as_number = DNSRecord.UNRESOLVABLE
+            return
+
+        # get asn org
+        try:
+            asn_resolver = dns.resolver.query("AS" + self.as_number + ".asn.cymru.com", "TXT")
+            self.as_number, self.as_cidr, self.as_country, _, _ = asn_resolver[0].to_text().strip("\"").split(" | ")
+        except dns.resolver.NXDOMAIN:
+            self.asn_org = DNSRecord.UNRESOLVABLE
+            return
 
 
 def get_asn(ips):
