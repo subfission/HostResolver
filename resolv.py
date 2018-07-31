@@ -238,10 +238,11 @@ class DNSRecord():
         for q in query:
             if RE_SPF.search(q.to_text()):
                 debug(q.to_text())
-                spf_results.append("\n".join("".join(q.to_text().split("\" \"")).strip('"').split(" ")[1:]))
+                spf_results.append( q.to_text().strip('"').lstrip('v=spf1').strip())
 
         if not spf_results:
             self.spf = DNSRecord.UNRESOLVABLE
+            return
 
         if len(spf_results) > 1:
             perm_err = True
@@ -314,6 +315,7 @@ def build_table(table_columns=[], records=[]):
         pretty_table.align['RType'] = 'c'
         records.sort()
         for record in records:
+            debug(", ".join(record.get_results() ))
             pretty_table.add_row(record.get_results())
         return pretty_table
     else:
@@ -363,7 +365,7 @@ class HostResolver:
 
         table = build_table(table_columns=table_columns, records=self.hosts)
         stdout(table)
-        print("")
+        print()
 
         if self.args.asn:
             salvageable_host_ips = [record.ip for record in self.hosts if not record.dead_host]
