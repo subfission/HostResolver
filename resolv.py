@@ -238,7 +238,11 @@ class DNSRecord():
         for q in query:
             if RE_SPF.search(q.to_text()):
                 debug(q.to_text())
-                spf_results.append( q.to_text().strip('"').lstrip('v=spf1').strip())
+                parts = q.to_text().strip('"').strip().split(" ")
+                if len(parts) > 1:
+                    spf_results.append( "SPF Parts: "+ "\n> ".join(parts))
+                else:
+                    spf_results.append( "\n".join(parts))
 
         if not spf_results:
             self.spf = DNSRecord.UNRESOLVABLE
