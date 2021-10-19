@@ -31,16 +31,16 @@ Optionally, you can use virtual_env or other tools to manage your packages.
 
     python3 resolve.py hostnames_file.txt
     
-**Advanced usage: Resolve ASNs & SPF records From List and Set Custom Thread Counts**
+**Advanced usage: Resolve ASNs, SPF, and DMARC records From List and Set Custom Thread Counts**
 
-    python3 resolv.py --threads 200 --asn --spf hostname_list.txt
+    python3 resolv.py --threads 200 --asn --spf --dmarc hostname_list.txt
     
 *More threads will allow a faster execution, with a tradeoff of system resources.*
 
 
 ## Future
 
- - DMARK & DKIM results
+ - DKIM results
  - Flags indicating DNS config issues
  - SSL Ciphers per host
  
