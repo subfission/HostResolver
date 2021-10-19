@@ -15,26 +15,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Author: Zach Jetson
+# Author: ѕυвƒιѕѕιση
 # Date:   May 2017
 # Name:   resolv.py
 #
-#
-import os
+# This file will setup the Host Resolver script.
 
 from setuptools import find_packages, setup
-
-"""This file will setup the Host Resolver script."""
-
 
 setup(
     name='resolv',
     description='Host resolver script.',
     long_description="Resolve hosts to IP addresses, scan for SPF records, and enumerate ASNs as quickly as possible.",
-    author='Zach Jetson',
-    author_email='zjetson@asu.edu',
-    maintainer='Zach Jetson',
-    maintainer_email='zjetson@asu.edu',
+    author='ѕυвƒιѕѕιση',
+    maintainer='ѕυвƒιѕѕιση',
     packages=find_packages(),
     keywords='host resolver enumeration',
 

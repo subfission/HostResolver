@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 
 """
-Copyright (c) 2017-2018, Zach Jetson All rights reserved.
-
+Copyright (c) 2017-2021, Zach Jetson All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -73,6 +72,7 @@ except ImportError as e:
     print(e)
     sys.exit("[!] Critical: Please run> pip3 install -r requirements.txt")
 
+
 RE_SPF = re.compile(r'v=spf1', re.IGNORECASE)
 RE_SPF_MECH = re.compile(r'^(?:include|exists|ptr|a|mx):', re.MULTILINE | re.IGNORECASE)
 RE_DMARC = re.compile(r'v=DMARC1', re.IGNORECASE)
@@ -81,45 +81,49 @@ MAX_THREADS = 100
 DEBUG = False
 
 
-def error(msg):
-    stdout(Colors.RED + '[!] Error: %s' % msg + Colors.ENDC)
 
+class fmtPrinter:
+    
+    def __init__(self) -> None:
+        self.colors = (
+            "Black", "Red", "Green","Yellow","Blue","Purple", "Cyan", "White", "Reset"
+        )
 
-def critical(msg):
-    stdout(Colors.RED + '[!] Critical: %s' % msg + Colors.ENDC)
-    sys.exit(1)
+    def color(self, name:str):
+        if not self.colors.index(name):
+            return ""
+        
+        if name == "Reset":
+            return '\033[0m'
 
-
-def info(msg):
-    stdout(Colors.GREEN + '[+] %s' % msg + Colors.ENDC)
-
-
-def debug(msg):
-    if DEBUG:
-        stdout(Colors.BLUE + '[+] %s' % msg + Colors.ENDC)
-
-
-def stdout(msg):
-    print(msg)
-
-
-class Colorize():
-    BLUE = '\033[94m'
-    GREEN = '\033[92m'
-    RED = '\033[91m'
-    ENDC = '\033[0m'
+        return '\033[9%sm' % self.colors.index(name)
+      
 
     def disable(self):
-        self.BLUE = ''
-        self.GREEN = ''
-        self.RED = ''
-        self.ENDC = ''
+        self.colors = ()
+
+    def error(self, msg):
+        fmtPrinter.stdout(self.color("Red") + '[!] Error: %s' % msg + self.color("Reset"), file=sys.stderr)
+
+    def critical(self, msg):
+        fmtPrinter.stdout(self.color("Red") + '[!] Critical: %s' % msg + self.color("Reset"), file=sys.stderr)
+        sys.exit(1)
+
+    def info(self, msg):
+        fmtPrinter.stdout(self.color("Green") + '[+] %s' % msg + self.color("Reset"))
+
+    def debug(self, msg):
+        if DEBUG:
+            fmtPrinter.stdout(self.color("Blue") + '[+] %s' % msg + self.color("Reset"))
+
+    @staticmethod
+    def stdout(msg, **kwargs):
+        print(msg, **kwargs)
+
+fout = fmtPrinter()
 
 
-Colors = Colorize()
-
-
-class DNSRecord():
+class DNSRecord:
     """
     DNSRecord manages DNS record actions and results
     """
@@ -155,17 +159,17 @@ class DNSRecord():
     def get_results(self):
         results = []
         if self.hostname == DNSRecord.UNRESOLVABLE:
-            results.append(Colors.RED + self.hostname + Colors.ENDC)
+            results.append(fout.color("Red") + self.hostname + fout.color("Reset"))
         else:
             results.append(self.hostname)
 
         if self.ip in (DNSRecord.UNRESOLVABLE, DNSRecord.ERROR):
-            results.append(Colors.RED + self.ip + Colors.ENDC)
+            results.append(fout.color("Red") + self.ip + fout.color("Reset"))
         else:
-            results.append(Colors.GREEN + self.ip + Colors.ENDC)
+            results.append(fout.color("Green") + self.ip + fout.color("Reset"))
 
         if self.rtype == DNSRecord.ERROR:
-            results.append(Colors.RED + self.rtype + Colors.ENDC)
+            results.append(fout.color("Red") + self.rtype + fout.color("Reset"))
         else:
             results.append(self.rtype)
 
@@ -174,13 +178,13 @@ class DNSRecord():
 
         if self.spf:
             if self.spf in (DNSRecord.ERROR, DNSRecord.UNRESOLVABLE, DNSRecord.MISSING_TXT):
-                results.append(Colors.RED + self.spf + Colors.ENDC)
+                results.append(fout.color("Red") + self.spf + fout.color("Reset"))
             else:
                 results.append(self.spf)
 
         if self.dmarc:
             if self.dmarc in (DNSRecord.ERROR, DNSRecord.UNRESOLVABLE, DNSRecord.MISSING_TXT):
-                results.append(Colors.RED + self.dmarc + Colors.ENDC)
+                results.append(fout.color("Red") + self.dmarc + fout.color("Reset"))
             else:
                 results.append(self.dmarc)
 
@@ -194,10 +198,10 @@ class DNSRecord():
             pass
         try:
             if self.ip:
-                debug("Resolving hostname from system: %s" % self.ip)
+                fout.debug("Resolving hostname from system: %s" % self.ip)
                 self.hostname = socket.gethostbyaddr(self.ip)[0]
             else:
-                debug("Resolving IP from system: %s" % self.hostname)
+                fout.debug("Resolving IP from system: %s" % self.hostname)
                 self.ip = str(socket.gethostbyname(self.hostname))
 
         except (socket.gaierror, socket.herror):
@@ -211,7 +215,7 @@ class DNSRecord():
         try:
             if self.hostname == DNSRecord.UNRESOLVABLE:
                 dns.exception.DNSException("")
-            query = resolver.query(self.result[0])
+            query = dns.resolver.resolve(self.result[0], search=True)
             self.rtype = dns.rdatatype.to_text(query.response.answer[0].rdtype)
             if self.verbose:
                 self.record = '\n'.join(str(i) for i in query.response.answer)
@@ -225,9 +229,9 @@ class DNSRecord():
     def get_spf(self):
         try:
             if self.hostname == DNSRecord.UNRESOLVABLE:
-                query = dns.resolver.query(self.ip, "TXT")
+                query = dns.resolver.resolve(self.ip, "TXT", search=True)
             else:
-                query = dns.resolver.query(self.hostname, "TXT")
+                query = dns.resolver.resolve(self.hostname, "TXT", search=True)
         except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
             self.spf = DNSRecord.MISSING_TXT
             return
@@ -237,23 +241,24 @@ class DNSRecord():
 
         for q in query:
             if RE_SPF.search(q.to_text()):
-                debug(q.to_text())
+                fout.debug(q.to_text())
                 spf_results.append("\n".join("".join(q.to_text().split("\" \"")).strip('"').split(" ")[1:]))
 
         if not spf_results:
             self.spf = DNSRecord.UNRESOLVABLE
+            return
 
         if len(spf_results) > 1:
             perm_err = True
-            debug("SPF PermErr: multiple SPF records detected")
+            fout.debug("SPF PermErr: multiple SPF records detected")
 
         spf_results = "".join(spf_results)
         if len(RE_SPF_MECH.findall(spf_results)) > 10:
-            debug("SPF PermErr: greater than 10 mechanisms detected")
+            fout.debug("SPF PermErr: greater than 10 mechanisms detected")
             perm_err = True
 
         if perm_err:
-            self.spf = Colors.RED + "PermErr\n" + Colors.ENDC + "".join(spf_results)
+            self.spf = fout.color("Red") + "PermErr\n" + fout.color("Reset") + "".join(spf_results)
         else:
             self.spf = "".join(spf_results)
 
@@ -263,16 +268,16 @@ class DNSRecord():
             return
         try:
             qstr = "_dmarc." + self.hostname
-            debug("Checking %s" % qstr)
-            query = dns.resolver.query(qstr, "TXT")
+            fout.debug("Checking %s" % qstr)
+            query = dns.resolver.resolve(qstr, "TXT", search=True)
         except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
             self.dmarc = DNSRecord.MISSING_TXT
             return
 
         for q in query:
             if RE_DMARC.search(q.to_text()):
-                debug(q.to_text())
-                self.dmarc = "\n".join(q.to_text().strip('"').split("; ")[1:])
+                fout.debug(q.to_text())
+                self.dmarc = "\n".join(q.to_text().replace('"', "").split("; ")[1:])
                 return
 
         self.dmarc = DNSRecord.ERROR
@@ -298,29 +303,46 @@ class DNSRecord():
             self.asn_org = DNSRecord.UNRESOLVABLE
             return
 
+    def __str__(self) -> str:
+        return str({
+            "result":       self.result,
+            "ip":           self.ip,
+            "rtype":        self.rtype,
+            "hostname":     self.hostname,
+            "record":       self.record,
+            "spf":          self.spf,
+            "as_number":    self.as_number,
+            "as_cidr":      self.as_cidr,
+            "as_countr":    self.as_country,
+            "asn_org":      self.asn_org,
+            "dmarc":        self.dmarc,
+            "dead_host":    self.dead_host
+        })
 
 def get_asn(ips):
-    debug("Requesting ASNs for %d IPs" % len(ips))
+    fout.debug("Requesting ASNs for %d IPs" % len(ips))
     c = Client()
     return [x for x in c.lookupmany(ips)]
 
 
 def build_table(table_columns=[], records=[]):
     if len(records) == 0:
-        critical("No targets were available for resolution")
+        fout.critical("No targets were available for resolution")
     if type(records[0]) is DNSRecord:
         pretty_table = PrettyTable(table_columns)
         pretty_table.align = "l"
         pretty_table.align['RType'] = 'c'
         records.sort()
-        for record in records:
-            pretty_table.add_row(record.get_results())
+        try:
+            pretty_table.add_rows([record.get_results() for record in records])
+        except Exception as e:
+            fout.critical("Unable to parse inconstent table data" + str([record.get_results() for record in records]))
         return pretty_table
     else:
         pretty_table = PrettyTable(table_columns)
         pretty_table.align = "l"
         for asn in records:
-            pretty_table.add_row([asn.ip, Colors.GREEN + asn.asn + Colors.ENDC, asn.prefix, asn.cc, asn.owner])
+            pretty_table.add_row([asn.ip, fout.color("Green") + asn.asn + fout.color("Reset"), asn.prefix, asn.cc, asn.owner])
         return pretty_table
 
 
@@ -332,48 +354,59 @@ class HostResolver:
         """
         self.hosts = []
         self.args = args
+        self.table_columns = ['Hostname', 'IP', 'RType']
 
     def resolve(self, records):
-        table_columns = ['Hostname', 'IP', 'RType']
-
         if not records or len(records) < 1:
-            critical("Invalid hosts")
+            fout.critical("Invalid hosts")
 
         if self.args.uncached:
-            debug("Uncached record search included...")
-            table_columns.append('DNS Record (uncached)')
+            fout.debug("Uncached record search included...")
+            self.table_columns.append('DNS Record (uncached)')
         if self.args.spf:
-            table_columns.append('SPF')
-            debug("SPF record search included...")
+            self.table_columns.append('SPF')
+            fout.debug("SPF record search included...")
         if self.args.dmarc:
-            table_columns.append('DMARC')
-            debug("DMARC record search included...")
+            self.table_columns.append('DMARC')
+            fout.debug("DMARC record search included...")
         if self.args.asn:
-            debug("ASN record search included...")
+            fout.debug("ASN record search included...")
 
         for hostname in records:
             try:
                 self.build_query_from_record(hostname)
             except KeyboardInterrupt:
                 self.max_threads = 0
-                error("shutting down cleanly")
+                fout.error("shutting down cleanly")
                 self.end_thread_pool()
 
         self.end_thread_pool()
 
-        table = build_table(table_columns=table_columns, records=self.hosts)
-        stdout(table)
-        print("")
-
         if self.args.asn:
-            salvageable_host_ips = [record.ip for record in self.hosts if not record.dead_host]
-            if len(salvageable_host_ips) == 0:
-                error("No IPs available for ASN resolution")
+            self.salvageable_host_ips = [record.ip for record in self.hosts if not record.dead_host]
+            if len(self.salvageable_host_ips) == 0:
+                fout.error("No IPs available for ASN resolution")
             else:
-                info("Requesting ASNs from %d resolved host IP addresses" % len(salvageable_host_ips))
-                asn_list = get_asn(salvageable_host_ips)
-                table = build_table(table_columns=['IP', 'ASN', 'Range', 'CO', 'Owner'], records=asn_list)
-                stdout(table)
+                
+                self.asn_list = get_asn(self.salvageable_host_ips)
+
+
+
+    def build_tables(self):
+        table = str(build_table(table_columns=self.table_columns, records=self.hosts)) + "\n"
+        fout.stdout(table)
+
+        if not self.args.asn:
+            return
+
+        if len(self.salvageable_host_ips) != 0:
+            fout.info("Requesting ASNs from %d resolved host IP addresses" % len(self.salvageable_host_ips))
+            table = str(build_table(table_columns=['IP', 'ASN', 'Range', 'CO', 'Owner'], records=self.asn_list))
+            fout.stdout(table)
+
+    def toJSON(self):
+        pass
+
 
     def query(self, hostname):
         dns_record = DNSRecord(hostname, spf=self.args.spf, uncached=self.args.uncached)
@@ -386,7 +419,7 @@ class HostResolver:
 
         self.hosts.append(dns_record)
         if self.args.verbose:
-            info(", ".join(dns_record.result))
+            fout.info(", ".join(dns_record.result))
 
     def build_query_from_record(self, hostname):
         while threading.active_count() >= self.max_threads:
@@ -408,34 +441,32 @@ class HostResolver:
                 continue
             aThread.join()
 
-        debug("Waiting for threads to finish")
+        fout.debug("Waiting for threads to finish")
 
 
 class Parser:
 
     def __init__(self, resource):
-
         self.resource = resource.strip()
-
         if os.path.isfile(resource):
             if resource.endswith('.csv'):
-                debug("CSV parsing mode")
+                fout.debug("CSV parsing mode")
                 self.parse_mode = "csv_parser"
             else:
-                debug("File parsing mode")
+                fout.debug("File parsing mode")
                 self.parse_mode = "file_parser"
         else:
-            debug("Argument parsing mode")
+            fout.debug("Argument parsing mode")
             self.parse_mode = "arg_parser"
 
     def parse(self):
-        print()
-        info("Resolving hosts from [ %s ]" % self.resource)
+        fout.stdout("")
+        fout.info("Resolving hosts from [ %s ]" % self.resource)
         try:
             parse_method = getattr(self, self.parse_mode)
             return parse_method()
         except (IOError, FileNotFoundError) as err:
-            critical("Error reading file %s: %s" % (self.resource, err))
+            fout.critical("Error reading file %s: %s" % (self.resource, err))
 
     def csv_parser(self):
         """
@@ -446,7 +477,6 @@ class Parser:
         """
         with open(self.resource) as csv_file:
             csv_reader = csv.reader(csv_file, delimiter=',', quotechar='"')
-
             header = next(csv_reader)
 
             # Assumed hostname resolution as primary
@@ -460,7 +490,7 @@ class Parser:
                     host_position = \
                         [i for i, s in enumerate(header) if s.lower() in ['ip', 'ip_addresses', 'ip addresses']][0]
                 except IndexError:
-                    debug("No hosts found or missing headers in file")
+                    fout.debug("No hosts found or missing headers in file")
                     return None
 
             hosts = []
@@ -484,22 +514,31 @@ class Parser:
 def main():
     parser = argparse.ArgumentParser(allow_abbrev=False,
                                      description="""{}
-           )               (
-        ( /(           )   )\ )           (
-        )\())       ( /(  (()/(  (        )\ )     (  (
-       ((_)\  (  (  )\())  /(_))))\(   ( ((_)((   ))\ )(
-        _((_) )\ )\(_))/  (_)) /((_)\  )\ _(_))\ /((_|())
-       | || |((_|(_) |_   | _ (_))((_)((_) |)((_|_))  ((_)
+           )                
+        ( /(                   )            )
+        )\())        )     (  /(         ( /(         
+       /(_)\        /(     )\/(_)        )\())        
+      ((_((_)      (_)    ((_))         ((_))           
+{}       | || |___ __| |_   | _ |___ __ ___| |_ __ ___  ___ 
        | __ / _ (_-<  _|  |   / -_|_-< _ \ \ V // -_)| '_|
        |_||_\___/__/\__|  |_|_\___/__|___/_|\_/ \___||_|
 
-{}      This script will quickly resolve a list of hosts to IP
+{}     This script will quickly resolve a list of hosts to IP
                 addresses using multiple techniques.{}
 
-                          By: Zach Jetson
-               github: https://github.com/subfission
+                          {}By: {}Zach Jetson
+       {}github: {}https://github.com/subfission/HostResolver
 
-    """.format(Colors.RED, Colors.BLUE, Colors.ENDC), formatter_class=argparse.RawTextHelpFormatter)
+    """.format(
+        fout.color("Red"), 
+        fout.color("Green"),
+        fout.color("Blue"),
+        fout.color("Reset"),
+        fout.color("Blue"),
+        fout.color("Reset"),
+        fout.color("Blue"),
+        fout.color("Reset"),
+        ), formatter_class=argparse.RawTextHelpFormatter)
 
     parser.add_argument('--verbose', '-v', action='store_true', help="Outputs verbose record information")
     parser.add_argument('--uncached', '-u', action='store_true', help="Include queries ignoring cached record data")
@@ -519,7 +558,7 @@ def main():
     args = parser.parse_args()
 
     if args.no_color:
-        Colors.disable()
+        fout.disable()
 
     if args.debug:
         global DEBUG
@@ -527,9 +566,10 @@ def main():
 
     parser = Parser(args.resource)
     records = parser.parse()
-
     host_resolver = HostResolver(args)
     host_resolver.resolve(records)
+    host_resolver.build_tables()
+
 
 
 if __name__ == '__main__':
