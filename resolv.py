@@ -90,7 +90,7 @@ class fmtPrinter:
         )
 
     def color(self, name:str):
-        if not self.colors.index(name):
+        if name not in self.colors:
             return ""
         
         if name == "Reset":
