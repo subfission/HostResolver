@@ -4,7 +4,7 @@ Resolve hosts to IP addresses, scan for SPF records, and enumerate ASNs as quick
 ![HostResolver Screenshot](https://raw.githubusercontent.com/subfission/HostResolver/master/HostResolver.png)
 
 ## Requirements
-* **Python 3.5+**
+* **Python 3.11+**
 
 ## Installation
 First make sure you have python 3.4+ and the python package manger (pip).
@@ -31,16 +31,26 @@ Optionally, you can use virtual_env or other tools to manage your packages.
 
     python3 resolve.py hostnames_file.txt
     
-**Advanced usage: Resolve ASNs, SPF, and DMARC records From List and Set Custom Thread Counts**
+**Advanced usage: Resolve all record types From List to JSON**
 
-    python3 resolv.py --threads 200 --asn --spf --dmarc hostname_list.txt
+    python3 resolv.py --asn --spf --cname -- hostname_list.txt
     
 *More threads will allow a faster execution, with a tradeoff of system resources.*
 
+## Updates
+
+- Updated support for newer Python 3.11+
+- Supports DMARK & DKIM
+- Uses async for even faster resolution
+- Improved error handling
+- Reverse lookups
+- Most fields are toggleable
+- Support for AAAA, MX, and CNAME host records
+- New outputs: JSON, SQLite, CSV
+- Verbose debug mode added
 
 ## Future
 
- - DKIM results
  - Flags indicating DNS config issues
  - SSL Ciphers per host
  

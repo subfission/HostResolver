@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-Copyright (c) 2017-2021, Zach Jetson All rights reserved.
+Copyright (c) 2017-2018, Zach Jetson All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,10 +26,9 @@ Usage: ./resolv.py hostnames.txt [-h]
 
 Requirements
 
-* Python 3.0-6
-* PrettyTable 0.7.x
-* dnspython 1.15.x
-* cymruwhois 1.6
+* Python 3.11
+* Rich 
+* dnspython
 
 Sample Output
 
@@ -47,530 +46,293 @@ Resolving hosts from file [hostnames.txt]
 
 """
 
-import sys
-from time import sleep
-
 import argparse
+import asyncio
 import csv
-import ipaddress
-import os
 import re
-import socket
-import threading
+import sqlite3
+import sys
+import traceback
+from functools import lru_cache
+from typing import Any, Dict, List
 
 try:
-    from cymruwhois import Client
-    from prettytable import PrettyTable
-    import dns.resolver
-    import dns.rdatatype
+    import dns.asyncresolver
     import dns.exception
+    import dns.reversename
+    from rich.console import Console
+    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
+    from rich.table import Table
+    from rich.json import JSON
+except ModuleNotFoundError as e:
+    print(str(e), file=sys.stderr)
+    print("Unable to import required module.", file=sys.stderr)
+    print("Run 'pip3 install requirements.txt' to continue... ", file=sys.stderr)
+    sys.exit(1)
 
-    resolver = dns.resolver.Resolver()
-    resolver.timeout = 1.0
-    resolver.lifetime = 1.0
-except ImportError as e:
-    print(e)
-    sys.exit("[!] Critical: Please run> pip3 install -r requirements.txt")
+console = Console()
+resolver = dns.asyncresolver.Resolver(configure=True)
+resolver.timeout = 2
+resolver.lifetime = 2
+
+DOMAIN_REGEX = re.compile(
+    r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
+    r"(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*\.[A-Za-z]{2,}$"
+)
+
+# === Async DNS Utilities ===
+
+@lru_cache(maxsize=512)
+def resolve_record_cached(domain: str, rtype: str):
+    return domain, rtype
+
+async def resolve_record(domain: str, rtype: str) -> List[str]:
+    try:
+        answers = await resolver.resolve(domain, rtype)
+        return [r.to_text() for r in answers]
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.Timeout):
+        return []
+
+async def reverse_lookup(ip: str) -> str:
+    rev_name = dns.reversename.from_address(ip)
+    answers = await resolver.resolve(rev_name, "PTR")
+    return str(answers[0]) if answers else ""
 
 
-RE_SPF = re.compile(r'v=spf1', re.IGNORECASE)
-RE_SPF_MECH = re.compile(r'^(?:include|exists|ptr|a|mx):', re.MULTILINE | re.IGNORECASE)
-RE_DMARC = re.compile(r'v=DMARC1', re.IGNORECASE)
+@lru_cache(maxsize=512)
+def get_asn_info_cached(ip: str):
+    return ip
 
-MAX_THREADS = 100
-DEBUG = False
+async def get_asn_info(ip: str) -> str:
+    try:
+        reversed_ip = ".".join(reversed(ip.split(".")))
+        query = f"{reversed_ip}.origin.asn.cymru.com"
+        answer = await resolver.resolve(query, "TXT")
+        return str(answer[0]).strip('"').split(" | ")[0] if answer else ""
+    except Exception as e:
+        return str(e)
 
+@lru_cache(maxsize=512)
+def get_asn_org_cached(asn: str):
+    return asn
 
+async def get_asn_org(asn: str) -> str:
+    try:
+        query = f"AS{asn}.asn.cymru.com"
+        answer = await resolver.resolve(query, "TXT")
+        return str(answer[0]).strip('"').split(" | ")[4] if answer else ""
+    except Exception as e:
+        return str(e)
 
-class fmtPrinter:
-    
-    def __init__(self) -> None:
-        self.colors = (
-            "Black", "Red", "Green","Yellow","Blue","Purple", "Cyan", "White", "Reset"
-        )
+async def get_spf(domain: str) -> str:
+    records = await resolve_record(domain, "TXT")
+    return next((r for r in records if "v=spf" in r.lower()), "")
 
-    def color(self, name:str):
-        if name not in self.colors:
-            return ""
-        
-        if name == "Reset":
-            return '\033[0m'
+async def get_dmarc(domain: str) -> str:
+    records = await resolve_record(f"_dmarc.{domain}", "TXT")
+    return next((r for r in records if "v=dmarc" in r.lower()), "")
 
-        return '\033[9%sm' % self.colors.index(name)
-      
+async def get_dkim(domain: str) -> str:
+    selectors = ["default", "selector1", "selector2"]
+    for selector in selectors:
+        records = await resolve_record(f"{selector}._domainkey.{domain}", "TXT")
+        for r in records:
+            if "v=dkim1" in r.lower():
+                return r
+    return ""
 
-    def disable(self):
-        self.colors = ()
+def validate_domain(domain: str) -> bool:
+    return DOMAIN_REGEX.fullmatch(domain) is not None
 
-    def error(self, msg):
-        fmtPrinter.stdout(self.color("Red") + '[!] Error: %s' % msg + self.color("Reset"), file=sys.stderr)
-
-    def critical(self, msg):
-        fmtPrinter.stdout(self.color("Red") + '[!] Critical: %s' % msg + self.color("Reset"), file=sys.stderr)
+def load_targets(input_path: str) -> List[str]:
+    try:
+        if input_path.endswith(".csv"):
+            with open(input_path, newline="") as f:
+                reader = csv.DictReader(f)
+                return [row[reader.fieldnames[0]] for row in reader if row[reader.fieldnames[0]]]
+        else:
+            with open(input_path) as f:
+                return [line.strip() for line in f if line.strip()]
+    except Exception as e:
+        console.print(f"[red]Error loading input:[/red] {e}")
         sys.exit(1)
 
-    def info(self, msg):
-        fmtPrinter.stdout(self.color("Green") + '[+] %s' % msg + self.color("Reset"))
+def save_to_sqlite(results: List[Dict[str, Any]], db_path: str, fields: List[str]):
+    try:
+        conn = sqlite3.connect(db_path)
+        col_str = ", ".join([f"{col} TEXT" for col in fields])
+        conn.execute(f"CREATE TABLE IF NOT EXISTS results ({col_str})")
+        for row in results:
+            placeholders = ", ".join(["?" for _ in fields])
+            conn.execute(
+                f"INSERT INTO results ({', '.join(fields)}) VALUES ({placeholders})",
+                [row.get(col, "") for col in fields],
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        console.print(f"[red]SQLite error:[/red] {e}")
 
-    def debug(self, msg):
-        if DEBUG:
-            fmtPrinter.stdout(self.color("Blue") + '[+] %s' % msg + self.color("Reset"))
-
-    @staticmethod
-    def stdout(msg, **kwargs):
-        print(msg, **kwargs)
-
-fout = fmtPrinter()
-
-
-class DNSRecord:
-    """
-    DNSRecord manages DNS record actions and results
-    """
-
-    UNRESOLVABLE = 'unresolvable'
-    ERROR = 'error'
-    MISSING_TXT = 'txt records not found'
-
-    def __init__(self, hostname, **kwargs):
-        # Flags for results and searches
-        self.inc_uncached = kwargs.get("uncached", False)
-        self.inc_spf = kwargs.get("spf", False)
-        self.inc_dmarc = kwargs.get("dmarc", False)
-        self.verbose = kwargs.get("verbose", False)
-
-        # Storage variables
-        self.result = [hostname]
-        self.ip = None
-        self.rtype = None
-        self.hostname = hostname
-        self.record = None
-        self.spf = None
-        self.as_number = None
-        self.as_cidr = None
-        self.as_country = None
-        self.asn_org = None
-        self.dmarc = None
-        self.dead_host = False
-
-    def __lt__(self, other: object) -> bool:
-        return (self.hostname.casefold(), self.ip) < (other.hostname.casefold(), other.ip)
-
-    def get_results(self):
-        results = []
-        if self.hostname == DNSRecord.UNRESOLVABLE:
-            results.append(fout.color("Red") + self.hostname + fout.color("Reset"))
-        else:
-            results.append(self.hostname)
-
-        if self.ip in (DNSRecord.UNRESOLVABLE, DNSRecord.ERROR):
-            results.append(fout.color("Red") + self.ip + fout.color("Reset"))
-        else:
-            results.append(fout.color("Green") + self.ip + fout.color("Reset"))
-
-        if self.rtype == DNSRecord.ERROR:
-            results.append(fout.color("Red") + self.rtype + fout.color("Reset"))
-        else:
-            results.append(self.rtype)
-
-        if self.inc_uncached:
-            results.append(self.record)
-
-        if self.spf:
-            if self.spf in (DNSRecord.ERROR, DNSRecord.UNRESOLVABLE, DNSRecord.MISSING_TXT):
-                results.append(fout.color("Red") + self.spf + fout.color("Reset"))
-            else:
-                results.append(self.spf)
-
-        if self.dmarc:
-            if self.dmarc in (DNSRecord.ERROR, DNSRecord.UNRESOLVABLE, DNSRecord.MISSING_TXT):
-                results.append(fout.color("Red") + self.dmarc + fout.color("Reset"))
-            else:
-                results.append(self.dmarc)
-
-        return results
-
-    def fetch_ip(self):
-
-        try:
-            self.ip = str(ipaddress.ip_address(self.hostname))
-        except ValueError:
-            pass
-        try:
-            if self.ip:
-                fout.debug("Resolving hostname from system: %s" % self.ip)
-                self.hostname = socket.gethostbyaddr(self.ip)[0]
-            else:
-                fout.debug("Resolving IP from system: %s" % self.hostname)
-                self.ip = str(socket.gethostbyname(self.hostname))
-
-        except (socket.gaierror, socket.herror):
-            if self.ip:
-                self.hostname = DNSRecord.UNRESOLVABLE
-            else:
-                self.ip = DNSRecord.UNRESOLVABLE
-            self.dead_host = True
-
-    def dns_interrogate(self):
-        try:
-            if self.hostname == DNSRecord.UNRESOLVABLE:
-                dns.exception.DNSException("")
-            query = dns.resolver.resolve(self.result[0], search=True)
-            self.rtype = dns.rdatatype.to_text(query.response.answer[0].rdtype)
-            if self.verbose:
-                self.record = '\n'.join(str(i) for i in query.response.answer)
-            else:
-                self.record = str(query.response.answer[0])
-
-        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
-            self.record = "error"
-            self.rtype = DNSRecord.ERROR
-
-    def get_spf(self):
-        try:
-            if self.hostname == DNSRecord.UNRESOLVABLE:
-                query = dns.resolver.resolve(self.ip, "TXT", search=True)
-            else:
-                query = dns.resolver.resolve(self.hostname, "TXT", search=True)
-        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
-            self.spf = DNSRecord.MISSING_TXT
-            return
-
-        spf_results = []
-        perm_err = False
-
-        for q in query:
-            if RE_SPF.search(q.to_text()):
-                fout.debug(q.to_text())
-                spf_results.append("\n".join("".join(q.to_text().split("\" \"")).strip('"').split(" ")[1:]))
-
-        if not spf_results:
-            self.spf = DNSRecord.UNRESOLVABLE
-            return
-
-        if len(spf_results) > 1:
-            perm_err = True
-            fout.debug("SPF PermErr: multiple SPF records detected")
-
-        spf_results = "".join(spf_results)
-        if len(RE_SPF_MECH.findall(spf_results)) > 10:
-            fout.debug("SPF PermErr: greater than 10 mechanisms detected")
-            perm_err = True
-
-        if perm_err:
-            self.spf = fout.color("Red") + "PermErr\n" + fout.color("Reset") + "".join(spf_results)
-        else:
-            self.spf = "".join(spf_results)
-
-    def get_dmarc(self):
-        if self.dead_host:
-            self.dmarc = DNSRecord.ERROR
-            return
-        try:
-            qstr = "_dmarc." + self.hostname
-            fout.debug("Checking %s" % qstr)
-            query = dns.resolver.resolve(qstr, "TXT", search=True)
-        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
-            self.dmarc = DNSRecord.MISSING_TXT
-            return
-
-        for q in query:
-            if RE_DMARC.search(q.to_text()):
-                fout.debug(q.to_text())
-                self.dmarc = "\n".join(q.to_text().replace('"', "").split("; ")[1:])
-                return
-
-        self.dmarc = DNSRecord.ERROR
-
-    def get_asn(self):
-        if self.ip == DNSRecord.UNRESOLVABLE:
-            self.as_number = DNSRecord.UNRESOLVABLE
-            return
-
-        try:
-            cymru_host_query = ".".join(list(reversed(self.ip.split(".")))) + ".origin.asn.cymru.com"
-            asn_resolver = dns.resolver.query(cymru_host_query, "TXT")
-            self.as_number, self.as_cidr, self.as_country, _, _ = asn_resolver[0].to_text().strip("\"").split(" | ")
-        except dns.resolver.NXDOMAIN:
-            self.as_number = DNSRecord.UNRESOLVABLE
-            return
-
-        # get asn org
-        try:
-            asn_resolver = dns.resolver.query("AS" + self.as_number + ".asn.cymru.com", "TXT")
-            self.as_number, self.as_cidr, self.as_country, _, _ = asn_resolver[0].to_text().strip("\"").split(" | ")
-        except dns.resolver.NXDOMAIN:
-            self.asn_org = DNSRecord.UNRESOLVABLE
-            return
-
-    def __str__(self) -> str:
-        return str({
-            "result":       self.result,
-            "ip":           self.ip,
-            "rtype":        self.rtype,
-            "hostname":     self.hostname,
-            "record":       self.record,
-            "spf":          self.spf,
-            "as_number":    self.as_number,
-            "as_cidr":      self.as_cidr,
-            "as_countr":    self.as_country,
-            "asn_org":      self.asn_org,
-            "dmarc":        self.dmarc,
-            "dead_host":    self.dead_host
-        })
-
-def get_asn(ips):
-    fout.debug("Requesting ASNs for %d IPs" % len(ips))
-    c = Client()
-    return [x for x in c.lookupmany(ips)]
-
-
-def build_table(table_columns=[], records=[]):
-    if len(records) == 0:
-        fout.critical("No targets were available for resolution")
-    if type(records[0]) is DNSRecord:
-        pretty_table = PrettyTable(table_columns)
-        pretty_table.align = "l"
-        pretty_table.align['RType'] = 'c'
-        records.sort()
-        try:
-            pretty_table.add_rows([record.get_results() for record in records])
-        except Exception as e:
-            fout.critical("Unable to parse inconstent table data" + str([record.get_results() for record in records]))
-        return pretty_table
+async def query_target(domain: str, opts: Dict[str, bool], debug: bool = False) -> Dict[str, Any]:
+    result: Dict[str, Any] = {"TARGET": domain}
+    errors = []
+    if not validate_domain(domain):
+        errors.append("Invalid domain format")
     else:
-        pretty_table = PrettyTable(table_columns)
-        pretty_table.align = "l"
-        for asn in records:
-            pretty_table.add_row([asn.ip, fout.color("Green") + asn.asn + fout.color("Reset"), asn.prefix, asn.cc, asn.owner])
-        return pretty_table
-
-
-class HostResolver:
-    def __init__(self, args):
-        self.max_threads = args.max_threads
-        """
-        Storage object for hosts
-        """
-        self.hosts = []
-        self.args = args
-        self.table_columns = ['Hostname', 'IP', 'RType']
-
-    def resolve(self, records):
-        if not records or len(records) < 1:
-            fout.critical("Invalid hosts")
-
-        if self.args.uncached:
-            fout.debug("Uncached record search included...")
-            self.table_columns.append('DNS Record (uncached)')
-        if self.args.spf:
-            self.table_columns.append('SPF')
-            fout.debug("SPF record search included...")
-        if self.args.dmarc:
-            self.table_columns.append('DMARC')
-            fout.debug("DMARC record search included...")
-        if self.args.asn:
-            fout.debug("ASN record search included...")
-
-        for hostname in records:
-            try:
-                self.build_query_from_record(hostname)
-            except KeyboardInterrupt:
-                self.max_threads = 0
-                fout.error("shutting down cleanly")
-                self.end_thread_pool()
-
-        self.end_thread_pool()
-
-        if self.args.asn:
-            self.salvageable_host_ips = [record.ip for record in self.hosts if not record.dead_host]
-            if len(self.salvageable_host_ips) == 0:
-                fout.error("No IPs available for ASN resolution")
-            else:
-                
-                self.asn_list = get_asn(self.salvageable_host_ips)
-
-
-
-    def build_tables(self):
-        table = str(build_table(table_columns=self.table_columns, records=self.hosts)) + "\n"
-        fout.stdout(table)
-
-        if not self.args.asn:
-            return
-
-        if len(self.salvageable_host_ips) != 0:
-            fout.info("Requesting ASNs from %d resolved host IP addresses" % len(self.salvageable_host_ips))
-            table = str(build_table(table_columns=['IP', 'ASN', 'Range', 'CO', 'Owner'], records=self.asn_list))
-            fout.stdout(table)
-
-    def toJSON(self):
-        pass
-
-
-    def query(self, hostname):
-        dns_record = DNSRecord(hostname, spf=self.args.spf, uncached=self.args.uncached)
-        dns_record.fetch_ip()
-        dns_record.dns_interrogate()
-        if self.args.spf:
-            dns_record.get_spf()
-        if self.args.dmarc:
-            dns_record.get_dmarc()
-
-        self.hosts.append(dns_record)
-        if self.args.verbose:
-            fout.info(", ".join(dns_record.result))
-
-    def build_query_from_record(self, hostname):
-        while threading.active_count() >= self.max_threads:
-            sleep(2)
-
-        pthread = threading.Thread(target=self.query, args=(hostname,))
-        pthread.start()
-
-    @staticmethod
-    def end_thread_pool():
-        """
-        Let threads finish and have them return their results
-
-        :return: void
-        """
-        main_thread = threading.currentThread()
-        for aThread in threading.enumerate():
-            if aThread is main_thread:
-                continue
-            aThread.join()
-
-        fout.debug("Waiting for threads to finish")
-
-
-class Parser:
-
-    def __init__(self, resource):
-        self.resource = resource.strip()
-        if os.path.isfile(resource):
-            if resource.endswith('.csv'):
-                fout.debug("CSV parsing mode")
-                self.parse_mode = "csv_parser"
-            else:
-                fout.debug("File parsing mode")
-                self.parse_mode = "file_parser"
-        else:
-            fout.debug("Argument parsing mode")
-            self.parse_mode = "arg_parser"
-
-    def parse(self):
-        fout.stdout("")
-        fout.info("Resolving hosts from [ %s ]" % self.resource)
         try:
-            parse_method = getattr(self, self.parse_mode)
-            return parse_method()
-        except (IOError, FileNotFoundError) as err:
-            fout.critical("Error reading file %s: %s" % (self.resource, err))
+            if debug: console.log(f"Resolving A records for {domain}")
+            a_records = await resolve_record(domain, "A")
+            result["A"] = "\n".join(a_records)
 
-    def csv_parser(self):
-        """
-        Parse CSV file into an list of targets.  Targets can be hostnames or IP addresses.
+            asn_list, org_list, reverse_list = [], [], []
 
-        Exceptions raised for file IO errors
-        :return:
-        """
-        with open(self.resource) as csv_file:
-            csv_reader = csv.reader(csv_file, delimiter=',', quotechar='"')
-            header = next(csv_reader)
+            for ip in a_records:
+                if debug: console.log(f"Getting ASN for {ip}")
+                asn = await get_asn_info(ip)
+                if asn:
+                    asn_list.append(asn)
+                    if opts.get("org"):
+                        if debug: console.log(f"Getting ORG for ASN {asn}")
+                        org = await get_asn_org(asn)
+                        if org:
+                            org_list.append(org)
+                        else:
+                            errors += ["No response for ASN org."]
 
-            # Assumed hostname resolution as primary
-            try:
-                host_position = [i for i, s in enumerate(header) if s.lower() in ['hostname', 'host', 'host name']][0]
-            except IndexError:
-                host_position = False
-            if not host_position:
-                # Assumed IP resolution
-                try:
-                    host_position = \
-                        [i for i, s in enumerate(header) if s.lower() in ['ip', 'ip_addresses', 'ip addresses']][0]
-                except IndexError:
-                    fout.debug("No hosts found or missing headers in file")
-                    return None
+                if opts.get("reverse"):
+                    if debug: console.log(f"Getting reverse DNS for {ip}")
+                    try:
+                        rev = await reverse_lookup(ip)
+                        if rev:
+                            reverse_list.append(rev)
+                    except Exception as e:
+                        errors += [str(e)]
+            if opts.get("asn"):
+                result["ASN"] = "\n".join(asn_list)
+            if org_list: result["ORG"] = "\n".join(org_list)
+            if reverse_list: result["Reverse"] = "\n".join(reverse_list)
 
-            hosts = []
-            for row in csv_reader:
-                r_hosts = row[host_position].split(" ")
-                if r_hosts:
-                    hosts = list(set(hosts + r_hosts))
+            for rtype in ["AAAA", "CNAME", "MX"]:
+                if opts.get(rtype.lower()):
+                    if debug: console.log(f"Resolving {rtype} for {domain}")
+                    records = await resolve_record(domain, rtype)
+                    if not records:
+                        errors += ["No answer for " + rtype + " request."]
+                    result[rtype] = "\n".join(records)
 
-        return filter(None, hosts)
+            if opts.get("spf"):
+                if debug: console.log(f"Getting SPF for {domain}")
+                result["SPF"] = await get_spf(domain)
+                if not result["SPF"]: errors += ["No response for SPF."]
+            if opts.get("dmarc"):
+                if debug: console.log(f"Getting DMARC for {domain}")
+                result["DMARC"] = await get_dmarc(domain)
+                if not result["DMARC"]: errors += ["No response for DMARC."]
+            if opts.get("dkim"):
+                if debug: console.log(f"Getting DKIM for {domain}")
+                result["DKIM"] = await get_dkim(domain)
+                if not result["DKIM"]: errors += ["No response for DKIM."]
 
-    def file_parser(self):
-        with open(self.resource, "r") as host_file:
-            hosts = [line.strip() for line in host_file]
+        except Exception as e:
+            errors += str(e)
+            if debug:
+                result["TRACE"] = traceback.format_exc()
 
-        return hosts
+    result["ERROR"] = "\n".join(errors)
+    return result
 
-    def arg_parser(self):
-        return [self.resource]
-
-
-def main():
-    parser = argparse.ArgumentParser(allow_abbrev=False,
-                                     description="""{}
-           )                
-        ( /(                   )            )
-        )\())        )     (  /(         ( /(         
-       /(_)\        /(     )\/(_)        )\())        
-      ((_((_)      (_)    ((_))         ((_))           
-{}       | || |___ __| |_   | _ |___ __ ___| |_ __ ___  ___ 
+async def main():
+    parser = argparse.ArgumentParser(allow_abbrev=False, 
+                                     description=r"""{}
+           )               (
+        ( /(           )   )\ )           (
+        )\())       ( /(  (()/(  (        )\ )     (  (
+       ((_)\  (  (  )\())  /(_))))\(   ( ((_)((   ))\ )(
+        _((_) )\ )\(_))/  (_)) /((_)\  )\ _(_))\ /((_|())
+       | || |((_|(_) |_   | _ (_))((_)((_) |)((_|_))  ((_)
        | __ / _ (_-<  _|  |   / -_|_-< _ \ \ V // -_)| '_|
-       |_||_\___/__/\__|  |_|_\___/__|___/_|\_/ \___||_|
+       |_||_\___/__/\__|  |_|_\___/__|___/_|\_/ \___||_|  v2
+{}
+ This utility script will perform rapid domain resolution at scale.
+{}
+                                                  By: Zach Jetson
+                            Github: https://github.com/subfission
 
-{}     This script will quickly resolve a list of hosts to IP
-                addresses using multiple techniques.{}
+    """.format('\033[91m', '\033[94m', '\033[0m'), formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument("input", help="A hostname, IP, CSV, or path to or return delimited file containing valid hostnames.")
 
-                          {}By: {}Zach Jetson
-       {}github: {}https://github.com/subfission/HostResolver
+    # Resolver Configuration
+    parser.add_argument("--timeout", type=int, default=3)
+    parser.add_argument("--nocolor", action="store_true", help="Disable colored output")
+    parser.add_argument("--debug", action="store_true", help="Outputs verbose record information")
 
-    """.format(
-        fout.color("Red"), 
-        fout.color("Green"),
-        fout.color("Blue"),
-        fout.color("Reset"),
-        fout.color("Blue"),
-        fout.color("Reset"),
-        fout.color("Blue"),
-        fout.color("Reset"),
-        ), formatter_class=argparse.RawTextHelpFormatter)
+    # Optionals
+    parser.add_argument("--asn", action='store_true', help="Retrieve ASN record(s)")
+    parser.add_argument("--org", action="store_true", help="Retrieve the ASN organization")
 
-    parser.add_argument('--verbose', '-v', action='store_true', help="Outputs verbose record information")
-    parser.add_argument('--uncached', '-u', action='store_true', help="Include queries ignoring cached record data")
-    parser.add_argument('--no-color', '-c', action='store_true', help="Disable colored output")
-    parser.add_argument('resource', metavar='hostnames',
-                        help="A hostname, IP, CSV, or return delimited file containing the host names for query.")
-    parser.add_argument('--spf', action='store_true', help="Query for SPF records")
-    parser.add_argument('--asn', action='store_true', help="Output ASN record for host or host list")
-    parser.add_argument('--dmarc', action='store_true', help="Output DMARC record for host or host list")
-    parser.add_argument('--threads', '-t',
-                        help='Set the maximum number of threads. (Recommended default is 50)',
-                        dest='max_threads',
-                        type=int,
-                        default=50)
-    parser.add_argument('--debug', '-d', action='store_true', help="Enable debug mode")
+    parser.add_argument("--aaaa", action="store_true", help="Retrieve the DNS AAAA record")
+    parser.add_argument("--cname", action="store_true", help="Retrieve the DNS CNAME record")
+    parser.add_argument("--mx", action="store_true", help="Retrieve the DNS MX record")
+    parser.add_argument("--spf", action='store_true', help="Retrieve the DNS SPF record(s)")
+    parser.add_argument("--dmarc", action='store_true', help="Retrieve DNS DMARC record")
+    parser.add_argument("--dkim", action="store_true", help="Retrieve the DNS DKIM record")
+    parser.add_argument("--reverse", action="store_true", help="Retrieve the DNS reverse lookup record")
+    
+    # Outputs
+    parser.add_argument("--json", action='store_true', help="Output as JSON directly")
+    parser.add_argument("--csv", help="Output CSV path")
+    parser.add_argument("--sqlite", help="Output SQLite DB path")
+    parser.add_argument("--error", action="store_true", help="Display record lookup errors in table output")
 
     args = parser.parse_args()
+    resolver.timeout = args.timeout
+    resolver.lifetime = args.timeout
+    opts = vars(args)
 
-    if args.no_color:
-        fout.disable()
+    if validate_domain(args.input) or re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", args.input):
+        targets = [args.input]
+    else:
+        targets = load_targets(args.input)
 
-    if args.debug:
-        global DEBUG
-        DEBUG = True
+    results = []
+    errors = 0
+    debug = args.debug
 
-    parser = Parser(args.resource)
-    records = parser.parse()
-    host_resolver = HostResolver(args)
-    host_resolver.resolve(records)
-    host_resolver.build_tables()
+    with Progress(SpinnerColumn(), BarColumn(), TextColumn("{task.description}"), TimeElapsedColumn(),
+        transient=True, console=console
+    ) as progress:
+        task = progress.add_task("Querying...", total=len(targets))
+        for t in targets:
+            res = await query_target(t, opts, debug)
+            results.append(res)
+            if "ERROR" in res: errors += 1
+            progress.advance(task)
 
+    base_fields = ["TARGET", "A"]
+    extra_fields = [f.upper() for f in ["asn","org", "aaaa", "cname", "mx", "spf", "dmarc", "dkim", "reverse", "error"] if opts.get(f)]
+    fields = base_fields + extra_fields
 
+    table = Table(show_header=True, expand=True, header_style="bold green" if not args.nocolor else "")
+    for field in fields:
+        table.add_column(field)
+    
+    for row in results:
+        table.add_row(*(row.get(f, "") for f in fields))
 
-if __name__ == '__main__':
-    main()
+    if not args.json:
+        console.print(table)
+        console.print(f"\n[green]Completed:[/green] {len(results)} domain | [red]Record With Errors:[/red] {errors}")
+
+    if args.json:
+        console.print(JSON.from_data(results), highlight=True)
+
+    if args.csv:
+        with open(args.csv, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(results)
+    if args.sqlite:
+        save_to_sqlite(results, args.sqlite, fields)
+
+if __name__ == "__main__":
+    asyncio.run(main())

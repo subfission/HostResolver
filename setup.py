@@ -15,20 +15,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Author: ѕυвƒιѕѕιση
-# Date:   May 2017
+# Author: Zach Jetson
+# Date:   May 2017-2025
 # Name:   resolv.py
 #
 # This file will setup the Host Resolver script.
 
 from setuptools import find_packages, setup
 
+"""This file will setup the Host Resolver script."""
+
 setup(
     name='resolv',
     description='Host resolver script.',
     long_description="Resolve hosts to IP addresses, scan for SPF records, and enumerate ASNs as quickly as possible.",
-    author='ѕυвƒιѕѕιση',
-    maintainer='ѕυвƒιѕѕιση',
+    author='Zach Jetson',
+    maintainer='Zach Jetson',
     packages=find_packages(),
     keywords='host resolver enumeration',
 
@@ -36,11 +38,11 @@ setup(
         'console_scripts': ['resolv = resolv:main']
     },
 
-    python_requires='>=3.5,<3.7',
+    python_requires='>=3.7,<3.13',
     setup_requires=[],
     install_requires=[
-        "PrettyTable>=0.7.2",
-        "dnspython3>=1.15.0",
-        "cymruwhois>=1.6"
+        "setuptools==79.0.1",
+        "dnspython==2.7.0",
+        "rich==14.0.0"
     ]
 )
