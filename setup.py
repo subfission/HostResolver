@@ -41,7 +41,7 @@ setup(
     python_requires='>=3.7,<3.13',
     setup_requires=[],
     install_requires=[
-        "setuptools==79.0.1",
+        "setuptools==83.0.0",
         "dnspython==2.7.0",
         "rich==14.0.0"
     ]
